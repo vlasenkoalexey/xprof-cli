@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "xprof-mcp"
+version = "0.1.0"
+description = "MCP server for OSS XProf (openxla/xprof) profiler"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+    "requests>=2.28.0",
+    "protobuf>=3.20.0",
+]
+
+[project.optional-dependencies]
+xplane = [
+    "tensorflow-cpu>=2.13.0",
+]
+
+[project.scripts]
+xprof-mcp = "xprof_mcp.server.xprof_mcp_server:main"
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["xprof_mcp*"]

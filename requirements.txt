@@ -1,0 +1,13 @@
+# Core dependencies
+mcp>=1.0.0
+requests>=2.28.0
+protobuf>=3.20.0
+
+# Install xprof to run the local profiling server:
+#   pip install xprof
+# Then start it with:
+#   xprof --logdir=<path_to_profiles> --port=8791
+
+# Optional: required for XPlane timeline tools
+# (list_xplane_events, aggregate_xplane_events, get_xspace_proto)
+# tensorflow-cpu>=2.13.0
