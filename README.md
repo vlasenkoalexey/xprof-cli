@@ -60,7 +60,7 @@ you restart or update the MCP server without restarting your AI assistant.
 
 ---
 
-#### Mode A: SSE (recommended — restart-friendly)
+#### Mode A: HTTP (recommended — restart-friendly)
 
 The MCP server runs as a standalone HTTP process. Your AI assistant connects to
 it via URL. Restart or edit the server anytime without touching your assistant.
@@ -71,14 +71,15 @@ it via URL. Restart or edit the server anytime without touching your assistant.
 PYTHONPATH=/path/to/xprof_mcp/.. \
 XPROF_URL=http://localhost:8791 \
 XPROF_LOGDIR=/tmp/profiles \
+XLA_HLO_DUMP_DIR=/tmp/hlo_dumps \  # optional: enables HLO dump tools
 MCP_PORT=8792 \
-python -m xprof_mcp.server.xprof_mcp_server --transport sse \
+python -m xprof_mcp.server.xprof_mcp_server --transport http \
   > /tmp/xprof_mcp.log 2>&1 &
 ```
 
 To restart after a code change:
 ```bash
-kill $(pgrep -f "xprof_mcp_server --transport sse") 2>/dev/null
+kill $(pgrep -f "xprof_mcp_server --transport http") 2>/dev/null
 # then re-run the start command above
 ```
 
@@ -122,7 +123,8 @@ restart whenever you update the MCP server code.
     "env": {
       "PYTHONPATH": "/path/to/xprof_mcp/..",
       "XPROF_URL": "http://localhost:8791",
-      "XPROF_LOGDIR": "/tmp/profiles"
+      "XPROF_LOGDIR": "/tmp/profiles",
+      "XLA_HLO_DUMP_DIR": "/tmp/hlo_dumps"
     }
   }
 }
@@ -139,7 +141,8 @@ restart whenever you update the MCP server code.
       "env": {
         "PYTHONPATH": "/path/to/xprof_mcp/..",
         "XPROF_URL": "http://localhost:8791",
-        "XPROF_LOGDIR": "/tmp/profiles"
+        "XPROF_LOGDIR": "/tmp/profiles",
+        "XLA_HLO_DUMP_DIR": "/tmp/hlo_dumps"
       }
     }
   }
@@ -205,7 +208,7 @@ xprof_mcp/
 |---------|---------|-------------|
 | `XPROF_URL` | `http://localhost:8791` | URL of the running xprof server |
 | `XPROF_LOGDIR` | *(empty)* | Path passed to `xprof --logdir=...` |
-| `XLA_HLO_DUMP_DIR` | *(empty)* | Path passed to `--xla_dump_to=...` |
+| `XLA_HLO_DUMP_DIR` | *(empty)* | Directory the MCP dump tools read from (set to the same path as `--xla_dump_to`) |
 
 ---
 
@@ -233,36 +236,62 @@ xprof server** and at every compilation stage, including per-pass diffs.
 ### Enable dumps
 
 ```bash
-# Before running your JAX/PyTorch-XLA program:
+# Step 1 — tell XLA to write dumps when running your program:
 export XLA_FLAGS="--xla_dump_to=/tmp/hlo_dumps \
                   --xla_dump_hlo_as_text \
                   --xla_dump_hlo_pass_re=.*"
-export XLA_HLO_DUMP_DIR=/tmp/hlo_dumps
 python your_script.py
+
+# Step 2 — tell the MCP server where to find those files:
+export XLA_HLO_DUMP_DIR=/tmp/hlo_dumps  # same path as --xla_dump_to
+python -m xprof_mcp.server.xprof_mcp_server --transport http
 ```
 
-Files produced:
+**Recommended format: `--xla_dump_hlo_as_text`** (default above). This produces human-readable
+HLO text files that all tools here support. Binary proto (`--xla_dump_hlo_as_proto`) requires a
+protobuf parser and is not needed for text-based analysis.
+
+Two file naming formats are supported automatically:
+
+**JAX / TensorFlow** (classic `.hlo` files):
 ```
 /tmp/hlo_dumps/
 ├── module_0001.jit_my_fn.before_optimizations.hlo  ← raw JAX/TF output
 ├── module_0001.jit_my_fn.after_optimizations.hlo   ← final compiled HLO
-├── module_0001.jit_my_fn.after_pass_HloCSE.hlo
-├── module_0001.jit_my_fn.after_pass_AlgebraicSimplifier.hlo
-├── module_0001.jit_my_fn.hlo.pb                    ← binary proto
+├── module_0001.jit_my_fn.after_pass_HloCSE.hlo     ← per-pass (with --xla_dump_hlo_pass_re=.*)
 └── ...
 ```
+
+**PyTorch/XLA** (`torch.compile` with openxla backend — `.txt` files):
+```
+/tmp/hlo_dumps/
+├── module_0006.jit_my_fn.0000.<pipeline>.after_<X>.before_<Y>.txt  ← first stage
+├── module_0006.jit_my_fn.0001.<pipeline>.after_<X>.before_<Y>.txt  ← intermediate
+├── module_0006.jit_my_fn.0005.<pipeline>.after_<X>.before_<Y>.txt  ← last stage
+└── ...
+```
+Stage aliases: `"before_optimizations"` = first file, `"after_optimizations"` = last file.
+Intermediate stages accessible as `"pass_NNNN"` (e.g. `"pass_0003"`).
 
 ### Analysis workflow
 
 ```
-list_hlo_dump_modules()                        # discover modules + stages
-get_hlo_dump("my_fn", "before_optimizations")  # see what JAX produced
-get_hlo_dump("my_fn", "after_optimizations")   # see what XLA compiled
+list_hlo_dump_modules()                        # discover modules + stages (both formats)
+get_hlo_dump("my_fn", "before_optimizations")  # first/pre-opt stage
+get_hlo_dump("my_fn", "after_optimizations")   # last/final stage
 diff_hlo_stages("my_fn",                       # what did the optimizer change?
     "before_optimizations", "after_optimizations")
-diff_hlo_stages("my_fn",                       # what did one pass do?
+diff_hlo_stages("my_fn",                       # what did one pass do? (JAX format)
     "after_pass_HloCSE", "after_pass_AlgebraicSimplifier")
+diff_hlo_stages("my_fn",                       # two consecutive passes (PyTorch/XLA)
+    "pass_0003", "pass_0004")
 get_hlo_dump_neighborhood("fusion.3", "my_fn") # root-cause a specific op
+```
+
+For PyTorch/XLA with many instances of the same module name (e.g. multiple `jit_splash_fn`
+compilations), include the module number to target a specific one:
+```
+get_hlo_dump("module_0006.jit_my_fn", "after_optimizations")
 ```
 
 ### When to use dumps vs. xprof

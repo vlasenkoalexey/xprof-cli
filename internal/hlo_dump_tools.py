@@ -1,24 +1,30 @@
 """Tools for reading XLA HLO dump files produced by XLA_FLAGS.
 
-Enable HLO dumps in JAX/XLA by setting XLA_FLAGS before running your program:
+Supports two dump formats:
 
-  # Minimal: just before/after optimizations (text)
-  XLA_FLAGS="--xla_dump_to=/tmp/hlo_dumps --xla_dump_hlo_as_text"
+**JAX / TF format** (--xla_dump_hlo_as_text):
+  Files: module_<N>.<name>.before_optimizations.hlo
+         module_<N>.<name>.after_optimizations.hlo
+         module_<N>.<name>.after_pass_<Pass>.hlo
+         module_<N>.<name>.hlo.pb / .hlo.pbtxt
 
-  # All compiler passes:
-  XLA_FLAGS="--xla_dump_to=/tmp/hlo_dumps --xla_dump_hlo_as_text \\
-             --xla_dump_hlo_pass_re=.*"
+  Enable with:
+    XLA_FLAGS="--xla_dump_to=/tmp/hlo_dumps --xla_dump_hlo_as_text"
+    XLA_FLAGS="--xla_dump_to=/tmp/hlo_dumps --xla_dump_hlo_as_text \\
+               --xla_dump_hlo_pass_re=.*"   # all compiler passes
 
-  # Also dump proto format (needed for get_hlo_neighborhood on dump files):
-  XLA_FLAGS="--xla_dump_to=/tmp/hlo_dumps --xla_dump_hlo_as_text \\
-             --xla_dump_hlo_as_proto --xla_dump_hlo_pass_re=.*"
+**PyTorch/XLA format** (torch.compile with openxla backend):
+  Files: module_<N>.<name>[.cl_<id>].<seq>.<pipeline>.<after_X>.<before_Y>.txt
 
-Files produced in the dump directory:
-  module_<N>.<name>.before_optimizations.hlo  — pre-optimization HLO text
-  module_<N>.<name>.after_optimizations.hlo   — final compiled HLO text
-  module_<N>.<name>.after_pass_<Pass>.hlo     — HLO after each compiler pass
-  module_<N>.<name>.hlo.pb                    — binary HloProto (all stages)
-  module_<N>.<name>.hlo.pbtxt                 — text HloProto
+  Stage aliases: "before_optimizations" = first seq, "after_optimizations" = last seq.
+  Intermediate stages: "pass_0001", "pass_0042", etc. (4-digit sequence number).
+
+  Enable with:
+    XLA_FLAGS="--xla_dump_to=/tmp/hlo_dumps --xla_dump_hlo_as_text"
+  (PyTorch/XLA uses text HLO with its own naming convention.)
+
+  Recommended: text format (--xla_dump_hlo_as_text) for both JAX and PyTorch/XLA —
+  it is human-readable, works with all tools here, and does not require protobuf.
 
 Configure via environment variable:
   XLA_HLO_DUMP_DIR=/tmp/hlo_dumps
@@ -36,35 +42,52 @@ from typing import Optional
 # Filename parsing
 # ---------------------------------------------------------------------------
 
-# Matches: module_<N>.<name>.<stage>.hlo
+# JAX/TF format: module_<N>.<name>.<stage>.hlo
 _STAGE_RE = re.compile(
     r"^(?P<prefix>module_\d+\..+?)"
     r"\.(?P<stage>before_optimizations|after_optimizations|after_pass_[^.]+)"
     r"\.hlo$"
 )
-# Matches: module_<N>.<name>.hlo.pb  or  module_<N>.<name>.hlo.pbtxt
+# JAX/TF proto format: module_<N>.<name>.hlo.pb  or  .hlo.pbtxt
 _PROTO_RE = re.compile(
     r"^(?P<prefix>module_\d+\..+?)\.hlo\.(?P<fmt>pb|pbtxt)$"
 )
-# Matches: module_<N>.<name>.dot  or  module_<N>.<name>.svg
+# JAX/TF viz format: module_<N>.<name>.dot  or  .svg
 _VIZ_RE = re.compile(
     r"^(?P<prefix>module_\d+\..+?)\.(?P<fmt>dot|svg)$"
+)
+# PyTorch/XLA format: module_<N>.<name>[.cl_<id>].<seq>.<pipeline>.<after_X>.<before_Y>.txt
+# The module name may contain dots (e.g. tt_jit_distributed.barrier_distributed.all_reduce).
+# The 4-digit sequence number is the disambiguating token.
+_PTXLA_RE = re.compile(
+    r"^(?P<prefix>module_\d+\..+?)"   # module_N.name  (lazy — grows until rest matches)
+    r"(?:\.cl_\d+)?"                   # optional .cl_NNNNNNNN  (PyTorch/XLA compilation id)
+    r"\.(?P<seq>\d{4})"                # .NNNN  sequence / pass number
+    r"\.[^.]+\.[^.]+\.[^.]+\.txt$"    # .pipeline.after_X.before_Y.txt
 )
 
 
 def _parse_filename(fname: str) -> Optional[dict]:
-    """Returns a dict with keys {prefix, stage, ext} or None if not recognised."""
+    """Returns a dict with keys {prefix, stage, ext, format} or None."""
     m = _STAGE_RE.match(fname)
     if m:
-        return {"prefix": m.group("prefix"), "stage": m.group("stage"), "ext": "hlo"}
+        return {"prefix": m.group("prefix"), "stage": m.group("stage"),
+                "ext": "hlo", "format": "jax"}
 
     m = _PROTO_RE.match(fname)
     if m:
-        return {"prefix": m.group("prefix"), "stage": "proto", "ext": m.group("fmt")}
+        return {"prefix": m.group("prefix"), "stage": "proto",
+                "ext": m.group("fmt"), "format": "jax"}
 
     m = _VIZ_RE.match(fname)
     if m:
-        return {"prefix": m.group("prefix"), "stage": "viz", "ext": m.group("fmt")}
+        return {"prefix": m.group("prefix"), "stage": "viz",
+                "ext": m.group("fmt"), "format": "jax"}
+
+    m = _PTXLA_RE.match(fname)
+    if m:
+        return {"prefix": m.group("prefix"), "seq": int(m.group("seq")),
+                "ext": "txt", "format": "ptxla"}
 
     return None
 
@@ -93,8 +116,20 @@ def _resolve_dump_dir(dump_dir: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _scan_dump_dir(dump_dir: str) -> dict[str, dict]:
-    """Scans dump_dir and returns {prefix -> {stage -> filename}}."""
+    """Scans dump_dir and returns {prefix -> {stage -> filename}}.
+
+    For JAX/TF format, stages are named 'before_optimizations',
+    'after_optimizations', 'after_pass_<Name>', 'proto', 'proto.pb', etc.
+
+    For PyTorch/XLA format, stages are named:
+      'before_optimizations'  — alias for the first (seq=0000) file
+      'after_optimizations'   — alias for the last (highest seq) file
+      'pass_NNNN'             — specific intermediate stage by sequence number
+    """
     modules: dict[str, dict] = {}
+    # Accumulate PyTorch/XLA entries by prefix -> {seq -> fname} before finalising
+    ptxla_seqs: dict[str, dict[int, str]] = {}
+
     try:
         entries = os.listdir(dump_dir)
     except FileNotFoundError:
@@ -105,12 +140,33 @@ def _scan_dump_dir(dump_dir: str) -> dict[str, dict]:
         if info is None:
             continue
         prefix = info["prefix"]
-        stage = info["stage"]
-        ext = info["ext"]
+
+        if info["format"] == "ptxla":
+            ptxla_seqs.setdefault(prefix, {})[info["seq"]] = fname
+        else:
+            # JAX/TF format
+            stage = info["stage"]
+            ext = info["ext"]
+            if prefix not in modules:
+                modules[prefix] = {"_format": "jax"}
+            key = stage if ext == "hlo" else f"{stage}.{ext}"
+            modules[prefix][key] = fname
+
+    # Finalise PyTorch/XLA modules: map seq numbers to stage names
+    for prefix, seq_map in ptxla_seqs.items():
         if prefix not in modules:
-            modules[prefix] = {}
-        key = stage if ext == "hlo" else f"{stage}.{ext}"
-        modules[prefix][key] = fname
+            modules[prefix] = {"_format": "ptxla"}
+        else:
+            modules[prefix]["_format"] = "ptxla"
+        sorted_seqs = sorted(seq_map)
+        for seq in sorted_seqs:
+            modules[prefix][f"pass_{seq:04d}"] = seq_map[seq]
+        # Convenience aliases
+        modules[prefix]["before_optimizations"] = seq_map[sorted_seqs[0]]
+        modules[prefix]["after_optimizations"] = seq_map[sorted_seqs[-1]]
+        modules[prefix]["_ptxla_seq_count"] = len(sorted_seqs)
+        modules[prefix]["_ptxla_first_seq"] = sorted_seqs[0]
+        modules[prefix]["_ptxla_last_seq"] = sorted_seqs[-1]
 
     return modules
 
@@ -166,14 +222,30 @@ def list_hlo_dump_modules(dump_dir: str = "") -> str:
         # Summarise stages for each module
         summary = {}
         for prefix, stages in sorted(modules.items()):
-            stage_names = sorted(stages.keys())
-            # Separate text stages from proto/viz
-            text_stages = [s for s in stage_names if not s.startswith("proto") and not s.startswith("viz")]
-            other = [s for s in stage_names if s.startswith("proto") or s.startswith("viz")]
-            summary[prefix] = {
-                "stages": text_stages,
-                "also_available": other,
-            }
+            fmt = stages.get("_format", "jax")
+            # Filter out internal metadata keys
+            stage_names = [k for k in sorted(stages.keys()) if not k.startswith("_")]
+
+            if fmt == "ptxla":
+                # For PyTorch/XLA, show compact summary (can have 100+ passes)
+                n = stages.get("_ptxla_seq_count", 0)
+                first = stages.get("_ptxla_first_seq", 0)
+                last = stages.get("_ptxla_last_seq", 0)
+                summary[prefix] = {
+                    "format": "ptxla",
+                    "stages": ["before_optimizations", "after_optimizations"],
+                    "intermediate_passes": n,
+                    "pass_range": f"pass_{first:04d}..pass_{last:04d}",
+                    "note": "Use 'before_optimizations'/'after_optimizations' or 'pass_NNNN'",
+                }
+            else:
+                text_stages = [s for s in stage_names if not s.startswith("proto") and not s.startswith("viz")]
+                other = [s for s in stage_names if s.startswith("proto") or s.startswith("viz")]
+                summary[prefix] = {
+                    "format": "jax",
+                    "stages": text_stages,
+                    "also_available": other,
+                }
 
         return json.dumps(
             {
@@ -204,17 +276,22 @@ def get_hlo_dump(
     Reads directly from XLA dump files — no xprof server required.
 
     Useful for inspecting:
-      - `before_optimizations`: what JAX/TF produced before XLA touched it.
-      - `after_optimizations`: what XLA actually compiled and ran.
-      - `after_pass_<Name>`: intermediate state after a specific compiler pass.
+      - `before_optimizations`: what JAX/TF/PyTorch produced before XLA optimized it.
+      - `after_optimizations`: the final compiled HLO.
+      - `after_pass_<Name>`: intermediate state after a specific compiler pass (JAX format).
+      - `pass_NNNN`: specific intermediate pass by sequence number (PyTorch/XLA format).
 
     Args:
         module_pattern: Module name or substring to match (case-insensitive glob).
                         Use `list_hlo_dump_modules` to find available names.
-        stage:          Compilation stage to read. One of:
-                          'before_optimizations' (default pre-opt HLO),
-                          'after_optimizations'  (default, final compiled HLO),
-                          'after_pass_<PassName>' (e.g. 'after_pass_HloCSE').
+                        For PyTorch/XLA with many instances of the same module name
+                        (e.g. jit_splash_fn), include the module number to disambiguate
+                        (e.g. 'module_0006' or 'module_0006.jit__my_fwd').
+        stage:          Compilation stage to read. Supported values:
+                          'before_optimizations'  — first/pre-opt stage (both formats)
+                          'after_optimizations'   — last/final stage (both formats)
+                          'after_pass_<PassName>' — JAX format only
+                          'pass_NNNN'             — PyTorch/XLA format, by sequence number
                         Defaults to 'after_optimizations'.
         dump_dir:       Path to the XLA dump directory. Defaults to
                         XLA_HLO_DUMP_DIR env var.
@@ -237,17 +314,32 @@ def get_hlo_dump(
                 f"Available (first 10): {available}"
             )
         if len(matched) > 1:
-            return (
-                f"Pattern '{module_pattern}' matched {len(matched)} modules: "
-                f"{matched[:10]}{'...' if len(matched) > 10 else ''}.\n"
-                "Refine the pattern to match exactly one module."
-            )
+            # For PyTorch/XLA, many instances of the same named module are common.
+            # If they all share the same logical name, pick the first and note it.
+            unique_names = {re.sub(r'^module_\d+\.', '', p) for p in matched}
+            if len(unique_names) == 1:
+                # All same logical name — use the first (lowest module number)
+                matched = [matched[0]]
+            else:
+                return (
+                    f"Pattern '{module_pattern}' matched {len(matched)} distinct modules: "
+                    f"{matched[:10]}{'...' if len(matched) > 10 else ''}.\n"
+                    "Refine the pattern to match exactly one module "
+                    "(include the module number, e.g. 'module_0006.jit__my_fwd')."
+                )
 
         prefix = matched[0]
         stages = modules[prefix]
 
         if stage not in stages:
-            available_stages = sorted(stages.keys())
+            fmt = stages.get("_format", "jax")
+            if fmt == "ptxla":
+                available_stages = (
+                    ["before_optimizations", "after_optimizations"]
+                    + [k for k in sorted(stages) if k.startswith("pass_")]
+                )
+            else:
+                available_stages = [k for k in sorted(stages) if not k.startswith("_")]
             return (
                 f"Stage '{stage}' not available for module '{prefix}'.\n"
                 f"Available stages: {available_stages}"
@@ -311,19 +403,24 @@ def diff_hlo_stages(
         if not matched:
             return f"No module matching '{module_pattern}' in {dump_dir}."
         if len(matched) > 1:
-            return (
-                f"Pattern matched {len(matched)} modules: {matched[:10]}. "
-                "Refine the pattern."
-            )
+            unique_names = {re.sub(r'^module_\d+\.', '', p) for p in matched}
+            if len(unique_names) == 1:
+                matched = [matched[0]]
+            else:
+                return (
+                    f"Pattern matched {len(matched)} distinct modules: {matched[:10]}. "
+                    "Refine the pattern."
+                )
 
         prefix = matched[0]
         stages = modules[prefix]
 
         for stage in (stage_before, stage_after):
             if stage not in stages:
+                available = [k for k in sorted(stages) if not k.startswith("_")]
                 return (
                     f"Stage '{stage}' not available for '{prefix}'.\n"
-                    f"Available stages: {sorted(stages.keys())}"
+                    f"Available stages: {available}"
                 )
 
         def _read(stage: str) -> list[str]:
