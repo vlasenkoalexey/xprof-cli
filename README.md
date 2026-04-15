@@ -8,6 +8,8 @@ This is the OSS counterpart of the internal `xprof_mcp` server. Instead of
 talking to Google-internal infrastructure, it connects to a locally running
 `xprof` HTTP server and reads `.xplane.pb` files directly from disk.
 
+**See also:** [TPU Performance Optimization Guide](docs/TPU_OPTIMIZATION.md) — practical guide covering the roofline model, common gotchas (dimension alignment, dtype, fusion failures, KV cache, rematerialization), training and inference optimization strategies, and decision trees for diagnosing bottlenecks.
+
 ---
 
 ## Quick Start
