@@ -6,7 +6,7 @@ import logging
 from xprof_mcp.internal import xprof_client
 
 
-def list_runs(session_path: str = "", run_path: str = "") -> str:
+def list_runs() -> str:
     """Lists all profiling runs available on the connected XProf server.
 
     **START HERE** if you don't know the run name. This replaces the
@@ -18,37 +18,12 @@ def list_runs(session_path: str = "", run_path: str = "") -> str:
     The xprof server must be running locally. Start it with:
       xprof --logdir=<path_to_profiles> --port=8791
 
-    Or point the MCP server at a specific path by passing URL params:
-      session_path: load a single session directory directly.
-      run_path:     load all sessions under a parent directory.
-
-    Args:
-        session_path: Optional path to a single session directory containing
-                      .xplane.pb files (e.g. '/data/my_run'). When set,
-                      only that session is shown.
-        run_path:     Optional path to a directory containing multiple session
-                      directories (e.g. '/data/profiles'). Lists all sessions
-                      found underneath.
-
     Returns:
         A JSON-formatted dict with the list of run names and server URL.
     """
     client = xprof_client.get_client()
     try:
-        params: dict = {}
-        if session_path:
-            params["session_path"] = session_path
-        if run_path:
-            params["run_path"] = run_path
-
-        import requests  # pylint: disable=g-import-not-at-top
-        resp = requests.get(
-            f"{client.base_url}/plugins/profile/runs",
-            params=params,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        runs = resp.json()
+        runs = client.get_runs()
 
         return json.dumps(
             {

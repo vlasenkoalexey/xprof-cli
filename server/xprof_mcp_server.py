@@ -21,7 +21,15 @@ Configuration (environment variables):
 Usage:
   python -m xprof_mcp.server.xprof_mcp_server
 
+Usage (stdio, default — Claude Code manages the process):
+  python -m xprof_mcp.server.xprof_mcp_server
+
+Usage (HTTP — recommended standalone mode, restart without restarting Claude Code):
+  python -m xprof_mcp.server.xprof_mcp_server --transport http --port 8792
+
 Add to Claude Code MCP config (~/.claude/settings.json):
+
+  Stdio mode (Claude Code manages the process):
   {
     "mcpServers": {
       "xprof": {
@@ -34,8 +42,12 @@ Add to Claude Code MCP config (~/.claude/settings.json):
       }
     }
   }
+
+  HTTP mode (recommended — server runs independently, stateless, restart-friendly):
+    claude mcp add --transport http --scope user xprof http://localhost:8792/mcp
 """
 
+import os
 import sys
 
 from mcp import types
@@ -50,7 +62,11 @@ from xprof_mcp.tools import get_overview_tool
 from xprof_mcp.tools import get_top_hlo_ops_tool
 from xprof_mcp.tools import list_runs_tool
 
-mcp = fastmcp.FastMCP("XProf")
+mcp = fastmcp.FastMCP(
+    "XProf",
+    port=int(os.environ.get("MCP_PORT", "8792")),
+    stateless_http=True,
+)
 
 # ---------------------------------------------------------------------------
 # Discovery / listing tools
@@ -64,6 +80,7 @@ mcp.add_tool(xprof_data.get_hosts)
 mcp.add_tool(get_overview_tool.get_overview)
 mcp.add_tool(get_memory_profile_tool.get_memory_profile)
 mcp.add_tool(get_top_hlo_ops_tool.get_top_hlo_ops)
+mcp.add_tool(xprof_data.get_op_profile)
 mcp.add_tool(xprof_data.get_profile_summary)
 mcp.add_tool(xprof_data.get_device_information)
 
@@ -142,7 +159,24 @@ def discovery_flow() -> list[types.PromptMessage]:
 
 
 def main() -> None:
-    mcp.run(transport="stdio")
+    import argparse
+    parser = argparse.ArgumentParser(description="XProf MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse", "http"],
+        default="stdio",
+        help="Transport mode: 'stdio' (managed by Claude Code), 'sse' (SSE HTTP server), or 'http' (streamable-http, recommended for standalone use).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8792,
+        help="Port for SSE transport (default: 8792). Ignored in stdio mode.",
+    )
+    args = parser.parse_args()
+
+    transport = "streamable-http" if args.transport == "http" else args.transport
+    mcp.run(transport=transport)
 
 
 if __name__ == "__main__":

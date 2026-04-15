@@ -30,16 +30,21 @@ from xprof_mcp.internal import xprof_client
 # Optional import of XPlane proto
 # ---------------------------------------------------------------------------
 try:
-    # TF 2.x path
+    # TF 2.x path (TF < 2.21)
     from tensorflow.python.profiler.trace import xplane_pb2  # type: ignore
     _HAS_XPLANE_PROTO = True
 except ImportError:
     try:
-        from tensorboard_plugin_profile.protobuf import xplane_pb2  # type: ignore
+        # TF 2.21+ path (moved to tsl)
+        from tensorflow.tsl.profiler.protobuf import xplane_pb2  # type: ignore
         _HAS_XPLANE_PROTO = True
     except ImportError:
-        _HAS_XPLANE_PROTO = False
-        xplane_pb2 = None  # type: ignore
+        try:
+            from tensorboard_plugin_profile.protobuf import xplane_pb2  # type: ignore
+            _HAS_XPLANE_PROTO = True
+        except ImportError:
+            _HAS_XPLANE_PROTO = False
+            xplane_pb2 = None  # type: ignore
 
 _XPLANE_IMPORT_ERROR = (
     "XPlane tools require the `tensorflow` or `tensorflow-cpu` package. "
@@ -243,6 +248,7 @@ def aggregate_xplane_events(
     host: str = "",
     plane_regex: str = ".*",
     event_regex: str = ".*",
+    top_n: int = 50,
 ) -> str:
     """Calculates statistical aggregates for matching timeline events.
 
@@ -257,6 +263,8 @@ def aggregate_xplane_events(
         host:        Host name. Defaults to the first host found.
         plane_regex: Regex to filter XPlanes.
         event_regex: Regex to filter event names.
+        top_n:       Return only the top N event types by total duration
+                     (default 50). Use a specific event_regex to narrow results.
 
     Returns:
         A JSON string with statistical aggregates grouped by event name.
@@ -322,7 +330,15 @@ def aggregate_xplane_events(
             })
 
         results.sort(key=lambda x: x["total_duration_ps"], reverse=True)
-        return json.dumps(results, indent=2)
+        truncated = len(results) > top_n
+        out = {
+            "total_event_types": len(results),
+            "shown": min(top_n, len(results)),
+            "events": results[:top_n],
+        }
+        if truncated:
+            out["note"] = f"Truncated to top {top_n} by total duration. Use event_regex to filter or increase top_n."
+        return json.dumps(out, indent=2)
 
     except ImportError:
         return _XPLANE_IMPORT_ERROR

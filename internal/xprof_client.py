@@ -9,12 +9,47 @@ Configuration via environment variables:
                  files directly from disk.
 """
 
-import functools
 import logging
 import os
 from typing import Optional
 
 import requests
+
+# ---------------------------------------------------------------------------
+# GCS-aware file helpers (use tf.io.gfile when logdir is a GCS path)
+# ---------------------------------------------------------------------------
+
+def _is_gcs(path: str) -> bool:
+    return path.startswith("gs://")
+
+
+def _gfile_exists(path: str) -> bool:
+    if _is_gcs(path):
+        try:
+            import tensorflow as tf  # pylint: disable=g-import-not-at-top
+            return tf.io.gfile.exists(path)
+        except ImportError:
+            return False
+    return os.path.exists(path)
+
+
+def _gfile_listdir(path: str) -> list[str]:
+    if _is_gcs(path):
+        try:
+            import tensorflow as tf  # pylint: disable=g-import-not-at-top
+            return tf.io.gfile.listdir(path)
+        except ImportError:
+            return []
+    return os.listdir(path)
+
+
+def _gfile_read(path: str) -> bytes:
+    if _is_gcs(path):
+        import tensorflow as tf  # pylint: disable=g-import-not-at-top
+        with tf.io.gfile.GFile(path, "rb") as f:
+            return f.read()
+    with open(path, "rb") as f:
+        return f.read()
 
 _DEFAULT_XPROF_URL = "http://localhost:8791"
 _INSTANCE: Optional["OSSXprofClient"] = None
@@ -43,7 +78,6 @@ class OSSXprofClient:
     # Listing endpoints
     # ------------------------------------------------------------------
 
-    @functools.lru_cache(maxsize=1)
     def get_runs(self) -> list[str]:
         """Returns a sorted list of available profiling run names."""
         resp = self._session.get(
@@ -158,32 +192,35 @@ class OSSXprofClient:
     def read_xplane_bytes(self, run: str, host: str) -> bytes:
         """Reads and returns raw bytes from <host>.xplane.pb."""
         path = self.get_xplane_file_path(run, host)
-        if not os.path.exists(path):
+        if not _gfile_exists(path):
+            session_dir = self.get_session_dir(run)
+            try:
+                available = _gfile_listdir(session_dir)
+            except Exception:  # pylint: disable=broad-exception-caught
+                available = []
             raise FileNotFoundError(
                 f"XPlane file not found: {path}\n"
-                f"Available files: {os.listdir(self.get_session_dir(run))}"
+                f"Available files: {available}"
             )
-        with open(path, "rb") as f:
-            return f.read()
+        return _gfile_read(path)
 
     def read_hlo_proto_bytes(self, run: str, module_name: str) -> bytes:
         """Reads and returns raw bytes from <module_name>.hlo_proto.pb."""
         path = self.get_hlo_proto_file_path(run, module_name)
-        if not os.path.exists(path):
+        if not _gfile_exists(path):
             raise FileNotFoundError(f"HLO proto file not found: {path}")
-        with open(path, "rb") as f:
-            return f.read()
+        return _gfile_read(path)
 
     def list_xplane_hosts(self, run: str) -> list[str]:
         """Lists hosts by scanning xplane.pb files in the session directory."""
         session_dir = self.get_session_dir(run)
         hosts = []
         try:
-            for fname in os.listdir(session_dir):
+            for fname in _gfile_listdir(session_dir):
                 if fname.endswith(".xplane.pb"):
                     host = fname[: -len(".xplane.pb")]
                     hosts.append(host)
-        except FileNotFoundError:
+        except (FileNotFoundError, Exception):  # pylint: disable=broad-exception-caught
             pass
         return sorted(hosts)
 

@@ -51,9 +51,82 @@ pip install -r requirements.txt
 pip install tensorflow-cpu
 ```
 
-### 4. Add to Gemini CLI
+### 4. Connect to your AI assistant
 
-Edit `~/.gemini/settings.json` (create it if it doesn't exist):
+There are two modes. **SSE mode is recommended** for active development — it lets
+you restart or update the MCP server without restarting your AI assistant.
+
+---
+
+#### Mode A: SSE (recommended — restart-friendly)
+
+The MCP server runs as a standalone HTTP process. Your AI assistant connects to
+it via URL. Restart or edit the server anytime without touching your assistant.
+
+**Start the server** (run once; re-run after any code change):
+
+```bash
+PYTHONPATH=/path/to/xprof_mcp/.. \
+XPROF_URL=http://localhost:8791 \
+XPROF_LOGDIR=/tmp/profiles \
+MCP_PORT=8792 \
+python -m xprof_mcp.server.xprof_mcp_server --transport sse \
+  > /tmp/xprof_mcp.log 2>&1 &
+```
+
+To restart after a code change:
+```bash
+kill $(pgrep -f "xprof_mcp_server --transport sse") 2>/dev/null
+# then re-run the start command above
+```
+
+**Claude Code** — run once:
+
+```bash
+claude mcp add --transport http --scope user xprof http://localhost:8792/mcp
+```
+
+No restart needed — Claude Code connects immediately.
+
+**Gemini CLI** — edit `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "xprof": {
+      "url": "http://localhost:8792/sse"
+    }
+  }
+}
+```
+
+Restart Gemini CLI once to pick up the config change. After that, MCP server
+restarts are transparent — no assistant restart needed.
+
+---
+
+#### Mode B: stdio (simpler setup, assistant manages the process)
+
+The assistant spawns the MCP server as a subprocess. Requires an assistant
+restart whenever you update the MCP server code.
+
+**Claude Code** — edit `~/.claude/.mcp.json`:
+
+```json
+{
+  "xprof": {
+    "command": "python",
+    "args": ["-m", "xprof_mcp.server.xprof_mcp_server"],
+    "env": {
+      "PYTHONPATH": "/path/to/xprof_mcp/..",
+      "XPROF_URL": "http://localhost:8791",
+      "XPROF_LOGDIR": "/tmp/profiles"
+    }
+  }
+}
+```
+
+**Gemini CLI** — edit `~/.gemini/settings.json`:
 
 ```json
 {
@@ -62,6 +135,7 @@ Edit `~/.gemini/settings.json` (create it if it doesn't exist):
       "command": "python",
       "args": ["-m", "xprof_mcp.server.xprof_mcp_server"],
       "env": {
+        "PYTHONPATH": "/path/to/xprof_mcp/..",
         "XPROF_URL": "http://localhost:8791",
         "XPROF_LOGDIR": "/tmp/profiles"
       }
@@ -69,32 +143,9 @@ Edit `~/.gemini/settings.json` (create it if it doesn't exist):
   }
 }
 ```
-
-Restart Gemini CLI. The xprof tools will be available automatically.
 
 > **Tip:** If `python` resolves to the wrong interpreter, use the full path
 > (e.g. `/usr/bin/python3` or the path to your venv's Python).
-
-### 5. Add to Claude Code
-
-Edit `~/.claude/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "xprof": {
-      "command": "python",
-      "args": ["-m", "xprof_mcp.server.xprof_mcp_server"],
-      "env": {
-        "XPROF_URL": "http://localhost:8791",
-        "XPROF_LOGDIR": "/tmp/profiles"
-      }
-    }
-  }
-}
-```
-
-Restart Claude Code and type `/xprof` or ask "analyze my XProf profile".
 
 ---
 
@@ -247,24 +298,3 @@ get_hlo_dump_neighborhood("fusion.3", "my_fn") # root-cause a specific op
 
 ---
 
-## Recommended Analysis Workflow
-
-1. **`list_runs()`** — find available sessions
-2. **`get_overview(run)`** — step time, utilization, bottleneck category
-3. **`get_top_hlo_ops(run)`** — which ops use the most time / compute / memory
-4. **`list_hlo_modules(run)`** → **`get_hlo_module_content(run, module)`** — inspect compiled HLO
-5. **`get_hlo_neighborhood(run, instruction_name)`** — root-cause a slow op
-6. **`get_memory_profile(run)`** — memory pressure analysis
-7. **`list_xplane_events(run)`** / **`aggregate_xplane_events(run)`** — timeline deep-dive
-
-## Differences from Internal xprof_mcp
-
-| Feature | Internal | OSS (this) |
-|---------|----------|------------|
-| Backend | `xprof_analysis_client` RPC | HTTP to local xprof server |
-| Session IDs | Opaque IDs from xprof service | Run directory names |
-| `find_session` | XManager / Borg / F1 query | `list_runs` (HTTP) |
-| `upload_trace` | Upload to xprof service | Not needed (files are local) |
-| `events_db` | Internal Events DB | Not available |
-| op_profile | Binary proto via RPC | `hlo_stats` JSON endpoint |
-| HLO content | `xla_client.HloModule` | `graph_viewer` HTTP endpoint |

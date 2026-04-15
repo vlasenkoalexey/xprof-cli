@@ -159,6 +159,160 @@ def get_hlo_op_profile(run: str, top_n: int = 15) -> str:
         return f"Error fetching HLO op profile: {e}"
 
 
+def _parse_op_profile_tree(
+    node: dict,
+    total_time_ps: float,
+    top_n: int,
+) -> dict:
+    """Recursively converts an op_profile node into a summary dict."""
+    m = node.get("metrics", {})
+    raw_time = float(m.get("rawTime") or 0)
+    raw_flops = float(m.get("rawFlops") or 0)
+    raw_bytes = float((m.get("rawBytesAccessedArray") or [0])[0])
+    occurrences = int(m.get("occurrences") or 0)
+    bw_utils = m.get("bandwidthUtils") or []
+    hbm_bw_util = float(bw_utils[0]) if bw_utils else 0.0
+
+    result: dict[str, Any] = {
+        "name": node.get("name", "?"),
+        "time_ms": round(raw_time / 1e9, 3),
+        "time_percent": round(raw_time / total_time_ps * 100, 1) if total_time_ps else 0.0,
+        "flops_tf": round(raw_flops / 1e12, 3),
+        "bytes_gib": round(raw_bytes / (1024 ** 3), 3),
+        "hbm_bw_utilization": round(hbm_bw_util, 4),
+    }
+    if occurrences:
+        result["occurrences"] = occurrences
+
+    children = node.get("children", [])
+    if children:
+        parsed = [_parse_op_profile_tree(c, total_time_ps, top_n) for c in children]
+        parsed.sort(key=lambda x: x["time_ms"], reverse=True)
+        result["top_ops"] = parsed[:top_n]
+
+    return result
+
+
+def get_op_profile(run: str, host: str = "", top_n: int = 10) -> str:
+    """Fetches a breakdown of device time by program and operation type.
+
+    This is the primary tool for understanding where device time is spent.
+    It uses the `op_profile` endpoint which provides a hierarchical view:
+      - Total time vs idle time
+      - Top N programs by time (each compiled XLA program)
+      - Top ops within each program (convolutions, all-reduce, attention, etc.)
+
+    Use this when `get_top_hlo_ops` returns no data (common for inference
+    runs where `hlo_stats` is unavailable).
+
+    Args:
+        run:   The run name (use `list_runs` to discover available runs).
+        host:  Host to query. Defaults to the first available host.
+        top_n: Number of top programs to show by time (default 10).
+               Remaining programs are aggregated into 'other_programs'.
+               Also controls max ops shown per program.
+
+    Returns:
+        A JSON-formatted dict with total time, idle time, top programs,
+        and an aggregate of the remaining programs.
+    """
+    client = xprof_client.get_client()
+    try:
+        if not host:
+            hosts = client.get_hosts(run)
+            host = hosts[0]["hostname"] if hosts else "ALL_HOSTS"
+
+        data = client.fetch("op_profile", run, host=host)
+        if isinstance(data, bytes):
+            data = data.decode("utf-8", errors="replace")
+        profile = json.loads(data)
+
+        by_program = profile.get("byProgram", {})
+        m = by_program.get("metrics", {})
+        total_time_ps = float(m.get("rawTime") or 0)
+        total_time_ms = total_time_ps / 1e9
+
+        all_programs = []
+        idle_ms = 0.0
+        ops_per_program = max(3, top_n // 2)
+        for child in by_program.get("children", []):
+            parsed = _parse_op_profile_tree(child, total_time_ps, ops_per_program)
+            if child.get("name") == "IDLE":
+                idle_ms = parsed["time_ms"]
+            else:
+                all_programs.append(parsed)
+
+        all_programs.sort(key=lambda x: x["time_ms"], reverse=True)
+
+        shown = all_programs[:top_n]
+        rest = all_programs[top_n:]
+        other: dict[str, Any] = {}
+        if rest:
+            other = {
+                "program_count": len(rest),
+                "total_time_ms": round(sum(p["time_ms"] for p in rest), 3),
+                "time_percent": round(
+                    sum(p["time_ms"] for p in rest) / total_time_ms * 100, 1
+                ) if total_time_ms else 0.0,
+            }
+
+        result: dict[str, Any] = {
+            "run": run,
+            "host": host,
+            "total_time_ms": round(total_time_ms, 3),
+            "idle_time_ms": round(idle_ms, 3),
+            "idle_percent": round(idle_ms / total_time_ms * 100, 1) if total_time_ms else 0.0,
+            "compute_time_ms": round(total_time_ms - idle_ms, 3),
+            "total_program_count": len(all_programs),
+            "top_programs": shown,
+        }
+        if other:
+            result["other_programs"] = other
+
+        return json.dumps(result, indent=2)
+
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logging.exception("Error fetching op profile for run %s", run)
+        return json.dumps({"error": str(e), "run": run}, indent=2)
+
+
+def _aggregate_ops_from_profile(profile: dict) -> list[dict[str, Any]]:
+    """Flattens op_profile tree, aggregating ops by name across all programs."""
+    by_program = profile.get("byProgram", {})
+    totals: dict[str, dict[str, Any]] = {}
+
+    for program in by_program.get("children", []):
+        if program.get("name") == "IDLE":
+            continue
+        for op in program.get("children", []):
+            name = op.get("name", "?")
+            m = op.get("metrics", {})
+            t = float(m.get("rawTime") or 0)
+            f = float(m.get("rawFlops") or 0)
+            b = float((m.get("rawBytesAccessedArray") or [0])[0])
+            occ = int(m.get("occurrences") or 0)
+            if name not in totals:
+                totals[name] = {"name": name, "time_ps": 0.0, "flops": 0.0, "bytes": 0.0, "occurrences": 0}
+            totals[name]["time_ps"] += t
+            totals[name]["flops"] += f
+            totals[name]["bytes"] += b
+            totals[name]["occurrences"] += occ
+
+    total_time_ps = float((by_program.get("metrics") or {}).get("rawTime") or 0)
+    result = []
+    for entry in totals.values():
+        t_ms = entry["time_ps"] / 1e9
+        result.append({
+            "name": entry["name"],
+            "total_time_ms": round(t_ms, 3),
+            "time_percent": round(t_ms / total_time_ps * 1e9 * 100, 1) if total_time_ps else 0.0,
+            "flops_tf": round(entry["flops"] / 1e12, 3),
+            "bytes_gib": round(entry["bytes"] / (1024 ** 3), 3),
+            "occurrences": entry["occurrences"],
+        })
+    return result
+
+
 def get_hosts(run: str) -> str:
     """Returns the list of hosts profiled in the run.
 

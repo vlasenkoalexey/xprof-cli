@@ -20,6 +20,17 @@ from xprof_mcp.internal import xprof_client
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+_NO_HLO_DATA_MSG = (
+    "No HLO graph data available for this run.\n"
+    "The profile was captured without HLO export. To get HLO data:\n"
+    "  1. XLA dump files (no re-profile needed):\n"
+    "       XLA_FLAGS='--xla_dump_to=/tmp/hlo --xla_dump_hlo_as_text'\n"
+    "       Then use list_hlo_dump_modules / get_hlo_dump tools.\n"
+    "  2. Profile with HLO export enabled (PyTorch/XLA):\n"
+    "       xp.trace(..., options={'xplane_options': {'save_hlo': True}})"
+)
+
+
 def _fetch_hlo_text(
     run: str,
     module_name: Optional[str],
@@ -27,13 +38,21 @@ def _fetch_hlo_text(
     print_metadata: bool = False,
 ) -> str:
     """Fetches the full HLO text for a module via the graph_viewer endpoint."""
+    import requests as _requests  # pylint: disable=g-import-not-at-top
     client = xprof_client.get_client()
     kwargs: dict = {"type": "long_txt"}
     if module_name:
         kwargs["host"] = module_name
     if print_metadata:
         kwargs["show_metadata"] = "true"
-    data = client.fetch("graph_viewer", run, **kwargs)
+    try:
+        data = client.fetch("graph_viewer", run, **kwargs)
+    except _requests.HTTPError as e:
+        if e.response is not None and e.response.status_code == 500:
+            body = e.response.text.strip()
+            if "hlo proto" in body.lower() or "can not load" in body.lower():
+                raise RuntimeError(_NO_HLO_DATA_MSG) from None
+        raise
     if isinstance(data, bytes):
         return data.decode("utf-8", errors="replace")
     return str(data)

@@ -12,7 +12,7 @@ import traceback
 from typing import Any
 
 from xprof_mcp.internal import xprof_client
-from xprof_mcp.internal.xprof_data import _parse_datatable
+from xprof_mcp.internal.xprof_data import _parse_datatable, _aggregate_ops_from_profile
 
 
 def get_top_hlo_ops(run: str, *, limit: int = 10) -> str:
@@ -38,8 +38,27 @@ def get_top_hlo_ops(run: str, *, limit: int = 10) -> str:
         rows = _parse_datatable(data)
 
         if not rows:
+            # hlo_stats is empty (common for inference runs) — fall back to op_profile
+            logging.info("hlo_stats empty for run %s, falling back to op_profile", run)
+            hosts = client.get_hosts(run)
+            host = hosts[0]["hostname"] if hosts else "ALL_HOSTS"
+            raw = client.fetch("op_profile", run, host=host)
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", errors="replace")
+            profile = json.loads(raw)
+            ops = _aggregate_ops_from_profile(profile)
+            top_by_time = heapq.nlargest(limit, ops, key=lambda x: x["total_time_ms"])
+            top_by_flops = heapq.nlargest(limit, ops, key=lambda x: x["flops_tf"])
+            top_by_bytes = heapq.nlargest(limit, ops, key=lambda x: x["bytes_gib"])
             return json.dumps(
-                {"error": "No HLO stats data found", "run": run}, indent=2
+                {
+                    "run": run,
+                    "source": "op_profile (hlo_stats unavailable)",
+                    "top_by_time": top_by_time,
+                    "top_by_flops": top_by_flops,
+                    "top_by_bytes_accessed": top_by_bytes,
+                },
+                indent=2,
             )
 
         # Discover column names dynamically
