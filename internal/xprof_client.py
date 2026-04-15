@@ -47,7 +47,7 @@ class OSSXprofClient:
     def get_runs(self) -> list[str]:
         """Returns a sorted list of available profiling run names."""
         resp = self._session.get(
-            f"{self._base_url}/plugins/profile/runs", timeout=30
+            f"{self._base_url}/data/plugin/profile/runs", timeout=30
         )
         resp.raise_for_status()
         return resp.json()
@@ -55,7 +55,7 @@ class OSSXprofClient:
     def get_run_tools(self, run: str) -> list[str]:
         """Returns available tools for a given run."""
         resp = self._session.get(
-            f"{self._base_url}/plugins/profile/run_tools",
+            f"{self._base_url}/data/plugin/profile/run_tools",
             params={"run": run},
             timeout=30,
         )
@@ -68,7 +68,7 @@ class OSSXprofClient:
         Returns a list of dicts with key 'hostname'.
         """
         resp = self._session.get(
-            f"{self._base_url}/plugins/profile/hosts",
+            f"{self._base_url}/data/plugin/profile/hosts",
             params={"run": run, "tag": tool},
             timeout=30,
         )
@@ -81,7 +81,7 @@ class OSSXprofClient:
         if host:
             params["host"] = host
         resp = self._session.get(
-            f"{self._base_url}/plugins/profile/module_list",
+            f"{self._base_url}/data/plugin/profile/module_list",
             params=params,
             timeout=60,
         )
@@ -118,7 +118,7 @@ class OSSXprofClient:
         params.update(kwargs)
         logging.info("xprof fetch: tool=%s run=%s host=%s extra=%s", tool, run, host, kwargs)
         resp = self._session.get(
-            f"{self._base_url}/plugins/profile/data",
+            f"{self._base_url}/data/plugin/profile/data",
             params=params,
             timeout=timeout,
         )
