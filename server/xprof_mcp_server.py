@@ -41,6 +41,7 @@ import sys
 from mcp import types
 from mcp.server import fastmcp
 
+from xprof_mcp.internal import hlo_dump_tools
 from xprof_mcp.internal import hlo_tools
 from xprof_mcp.internal import xplane_tools
 from xprof_mcp.internal import xprof_data
@@ -80,6 +81,14 @@ mcp.add_tool(xplane_tools.list_xplane_events)
 mcp.add_tool(xplane_tools.aggregate_xplane_events)
 mcp.add_tool(xplane_tools.get_xspace_proto)
 
+# ---------------------------------------------------------------------------
+# XLA HLO dump tools (read from --xla_dump_to directory, no server needed)
+# ---------------------------------------------------------------------------
+mcp.add_tool(hlo_dump_tools.list_hlo_dump_modules)
+mcp.add_tool(hlo_dump_tools.get_hlo_dump)
+mcp.add_tool(hlo_dump_tools.diff_hlo_stages)
+mcp.add_tool(hlo_dump_tools.get_hlo_dump_neighborhood)
+
 
 # ---------------------------------------------------------------------------
 # Discovery prompt
@@ -109,8 +118,23 @@ def discovery_flow() -> list[types.PromptMessage]:
                     "7. **Timeline** (requires tensorflow + XPROF_LOGDIR):\n"
                     "   - `list_xplane_events(run)` — find specific kernel instances.\n"
                     "   - `aggregate_xplane_events(run)` — statistical breakdown.\n\n"
+                    "--- XLA HLO Dump Workflow (no xprof server needed) ---\n\n"
+                    "Enable dumps before running your program:\n"
+                    "  XLA_FLAGS='--xla_dump_to=/tmp/hlo --xla_dump_hlo_as_text"
+                    " --xla_dump_hlo_pass_re=.*'\n\n"
+                    "A. `list_hlo_dump_modules(dump_dir)` — discover modules and\n"
+                    "   available stages (before_optimizations, after_optimizations,\n"
+                    "   after_pass_<Name>).\n\n"
+                    "B. `get_hlo_dump(module_pattern, stage)` — read HLO text at a\n"
+                    "   specific stage. Use 'before_optimizations' to see raw JAX output.\n\n"
+                    "C. `diff_hlo_stages(module_pattern, stage_before, stage_after)` —\n"
+                    "   unified diff between any two stages to isolate what changed.\n\n"
+                    "D. `get_hlo_dump_neighborhood(instruction, module_pattern, stage)` —\n"
+                    "   BFS neighborhood of an instruction in a dump file.\n\n"
                     "Profile files are in:\n"
                     "  <logdir>/plugins/profile/<run_name>/<host>.xplane.pb\n"
+                    "HLO dump files are in:\n"
+                    "  <dump_dir>/module_<N>.<name>.<stage>.hlo\n"
                 ),
             ),
         )

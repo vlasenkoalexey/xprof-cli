@@ -137,6 +137,10 @@ xprof_mcp/
 | `list_xplane_events` | Filter timeline events by regex | Yes |
 | `aggregate_xplane_events` | Stats (count/avg/stddev) per event type | Yes |
 | `get_xspace_proto` | Raw XSpace proto bytes or text | Yes |
+| `list_hlo_dump_modules` | List modules and stages in an XLA dump dir | No |
+| `get_hlo_dump` | Read HLO text at a specific compilation stage | No |
+| `diff_hlo_stages` | Unified diff between two compilation stages | No |
+| `get_hlo_dump_neighborhood` | BFS neighborhood from a dump file | No |
 
 "Needs TF?" = requires `tensorflow-cpu` and `XPROF_LOGDIR` to be set.
 
@@ -148,6 +152,7 @@ xprof_mcp/
 |---------|---------|-------------|
 | `XPROF_URL` | `http://localhost:8791` | URL of the running xprof server |
 | `XPROF_LOGDIR` | *(empty)* | Path passed to `xprof --logdir=...` |
+| `XLA_HLO_DUMP_DIR` | *(empty)* | Path passed to `--xla_dump_to=...` |
 
 ---
 
@@ -164,6 +169,59 @@ xprof_mcp/
 ```
 
 The `run_name` is what you pass as `run` to all tools.
+
+---
+
+## XLA HLO Dump Workflow
+
+HLO dumps let you inspect the XLA compiler's work **without running the
+xprof server** and at every compilation stage, including per-pass diffs.
+
+### Enable dumps
+
+```bash
+# Before running your JAX/PyTorch-XLA program:
+export XLA_FLAGS="--xla_dump_to=/tmp/hlo_dumps \
+                  --xla_dump_hlo_as_text \
+                  --xla_dump_hlo_pass_re=.*"
+export XLA_HLO_DUMP_DIR=/tmp/hlo_dumps
+python your_script.py
+```
+
+Files produced:
+```
+/tmp/hlo_dumps/
+├── module_0001.jit_my_fn.before_optimizations.hlo  ← raw JAX/TF output
+├── module_0001.jit_my_fn.after_optimizations.hlo   ← final compiled HLO
+├── module_0001.jit_my_fn.after_pass_HloCSE.hlo
+├── module_0001.jit_my_fn.after_pass_AlgebraicSimplifier.hlo
+├── module_0001.jit_my_fn.hlo.pb                    ← binary proto
+└── ...
+```
+
+### Analysis workflow
+
+```
+list_hlo_dump_modules()                        # discover modules + stages
+get_hlo_dump("my_fn", "before_optimizations")  # see what JAX produced
+get_hlo_dump("my_fn", "after_optimizations")   # see what XLA compiled
+diff_hlo_stages("my_fn",                       # what did the optimizer change?
+    "before_optimizations", "after_optimizations")
+diff_hlo_stages("my_fn",                       # what did one pass do?
+    "after_pass_HloCSE", "after_pass_AlgebraicSimplifier")
+get_hlo_dump_neighborhood("fusion.3", "my_fn") # root-cause a specific op
+```
+
+### When to use dumps vs. xprof
+
+| Situation | Use |
+|-----------|-----|
+| No profiling yet, just want to see compiled HLO | HLO dumps |
+| Want to see pre-optimization HLO (what JAX emitted) | HLO dumps |
+| Debugging a compiler regression (which pass changed something) | HLO dumps |
+| Want timing data (which op is slow) | xprof server |
+| Want memory profile, step time breakdown | xprof server |
+| Want timeline events (kernel durations, gaps) | xprof server + tensorflow |
 
 ---
 
