@@ -1,6 +1,6 @@
 # XProf MCP Server (OSS)
 
-An MCP server that lets AI assistants (Claude Code, Gemini, etc.) analyze
+An MCP server that lets AI assistants (Gemini, JetSki, etc.) analyze
 JAX / PyTorch-XLA / TensorFlow profiles on TPUs and GPUs via the open-source
 [xprof](https://github.com/openxla/xprof) profiler.
 
@@ -222,6 +222,28 @@ get_hlo_dump_neighborhood("fusion.3", "my_fn") # root-cause a specific op
 | Want timing data (which op is slow) | xprof server |
 | Want memory profile, step time breakdown | xprof server |
 | Want timeline events (kernel durations, gaps) | xprof server + tensorflow |
+
+---
+
+## Recommended Analysis Workflow
+
+1. **`list_runs()`** — find available sessions
+2. **`get_overview(run)`** — step time, utilization, bottleneck category
+3. **`get_top_hlo_ops(run)`** — which ops use the most time / compute / memory
+4. **`list_hlo_modules(run)`** → **`get_hlo_module_content(run, module)`** — inspect compiled HLO
+5. **`get_hlo_neighborhood(run, instruction_name)`** — root-cause a slow op
+6. **`get_memory_profile(run)`** — memory pressure analysis
+7. **`list_xplane_events(run)`** / **`aggregate_xplane_events(run)`** — timeline deep-dive
+
+## Differences from Internal xprof_mcp
+
+| Feature | Internal | OSS (this) |
+|---------|----------|------------|
+| Backend | `xprof_analysis_client` RPC | HTTP to local xprof server |
+| Session IDs | Opaque IDs from xprof service | Run directory names |
+| `find_session` | XManager / Borg / F1 query | `list_runs` (HTTP) |
+| op_profile | Binary proto via RPC | `hlo_stats` JSON endpoint |
+| HLO content | `xla_client.HloModule` | `graph_viewer` HTTP endpoint |
 
 ---
 
