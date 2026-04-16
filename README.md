@@ -207,8 +207,8 @@ xprof_mcp/
 | Env Var | Default | Description |
 |---------|---------|-------------|
 | `XPROF_URL` | `http://localhost:8791` | URL of the running xprof server |
-| `XPROF_LOGDIR` | *(empty)* | Path passed to `xprof --logdir=...` |
-| `XLA_HLO_DUMP_DIR` | *(empty)* | Directory the MCP dump tools read from (set to the same path as `--xla_dump_to`) |
+| `XPROF_LOGDIR` | *(auto-detected)* | Path passed to `xprof --logdir=...`. Required only for XPlane timeline tools (`list_xplane_events`, `aggregate_xplane_events`, `get_xspace_proto`). When the xprof server runs on localhost, the MCP server detects it automatically from the server process; set explicitly for remote servers or GCS paths. |
+| `XLA_HLO_DUMP_DIR` | *(empty)* | Directory the MCP dump tools read from (set to the same path as `--xla_dump_to`). Optional — can also be passed per-call as `dump_dir`. |
 
 ---
 

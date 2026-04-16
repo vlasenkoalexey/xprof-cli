@@ -7,11 +7,14 @@ Configuration via environment variables:
   XPROF_LOGDIR - Path to the logdir used when starting the xprof server.
                  Required for tools that read raw .xplane.pb / .hlo_proto.pb
                  files directly from disk.
+                 Optional when the xprof server runs on localhost — the logdir
+                 is auto-detected from the server process cmdline via /proc.
 """
 
 import logging
 import os
 from typing import Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -55,6 +58,81 @@ _DEFAULT_XPROF_URL = "http://localhost:8791"
 _INSTANCE: Optional["OSSXprofClient"] = None
 
 
+def _detect_logdir_from_procfs(xprof_url: str) -> str:
+    """Try to detect the xprof logdir from the server process cmdline via /proc.
+
+    Works only on Linux when the xprof server is running on localhost.
+    Returns "" silently on any failure (remote server, non-Linux, missing perms).
+    """
+    try:
+        parsed = urlparse(xprof_url)
+        if parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+            return ""  # Remote server — procfs won't help
+
+        port = parsed.port or 8791
+        port_hex = f"{port:04X}"
+
+        # Step 1: find the socket inode for our port in /proc/net/tcp[6]
+        inode = None
+        for tcp_path in ("/proc/net/tcp", "/proc/net/tcp6"):
+            try:
+                with open(tcp_path) as f:
+                    for line in f:
+                        parts = line.split()
+                        if len(parts) < 10:
+                            continue
+                        local_addr, state = parts[1], parts[3]
+                        if state == "0A" and local_addr.upper().endswith(f":{port_hex}"):
+                            inode = parts[9]
+                            break
+            except OSError:
+                continue
+            if inode:
+                break
+
+        if not inode:
+            return ""
+
+        socket_target = f"socket:[{inode}]"
+
+        # Step 2: find which PID owns a file descriptor pointing to that socket
+        pid = None
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            fd_dir = f"/proc/{entry}/fd"
+            try:
+                for fd in os.listdir(fd_dir):
+                    try:
+                        if os.readlink(f"{fd_dir}/{fd}") == socket_target:
+                            pid = entry
+                            break
+                    except OSError:
+                        continue
+            except OSError:
+                continue
+            if pid:
+                break
+
+        if not pid:
+            return ""
+
+        # Step 3: parse --logdir from the process cmdline
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            args = f.read().decode("utf-8", errors="replace").split("\0")
+
+        for i, arg in enumerate(args):
+            if arg.startswith("--logdir="):
+                return arg.split("=", 1)[1]
+            if arg in ("--logdir", "-l") and i + 1 < len(args):
+                return args[i + 1]
+
+        return ""
+
+    except Exception:  # pylint: disable=broad-exception-caught
+        return ""
+
+
 class OSSXprofClient:
     """HTTP client for the OSS XProf server."""
 
@@ -63,6 +141,10 @@ class OSSXprofClient:
             base_url or os.environ.get("XPROF_URL", _DEFAULT_XPROF_URL)
         ).rstrip("/")
         self._logdir = logdir or os.environ.get("XPROF_LOGDIR", "")
+        if not self._logdir:
+            self._logdir = _detect_logdir_from_procfs(self._base_url)
+            if self._logdir:
+                logging.info("Auto-detected xprof logdir from procfs: %s", self._logdir)
         self._session = requests.Session()
         self._session.headers.update({"Accept": "*/*"})
 
@@ -170,9 +252,10 @@ class OSSXprofClient:
     def _require_logdir(self) -> str:
         if not self._logdir:
             raise RuntimeError(
-                "XPROF_LOGDIR environment variable is not set. "
-                "Set it to the logdir you passed to `xprof --logdir=...` "
-                "to enable tools that read raw .xplane.pb files."
+                "Could not determine the xprof logdir. "
+                "Set XPROF_LOGDIR to the path you passed to `xprof --logdir=...`, "
+                "or ensure the xprof server is running on localhost so it can be "
+                "detected automatically."
             )
         return self._logdir
 
