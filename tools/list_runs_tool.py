@@ -9,11 +9,12 @@ from xprof_mcp.internal import xprof_client
 def list_runs() -> str:
     """Lists all profiling runs available on the connected XProf server.
 
-    **START HERE** if you don't know the run name. This replaces the
-    internal `find_xprof_session` tool for OSS use.
+    **START HERE** if you don't know the run name. Typical flow:
 
-    The run name returned here is what you pass as the `run` argument to
-    all other tools (e.g. `get_overview`, `get_top_hlo_ops`).
+      1. Call `list_runs()` to discover available profiling runs.
+      2. Pick a run name from the returned list.
+      3. Pass it as the `run` argument to the other tools
+         (e.g. `get_overview`, `get_top_hlo_ops`, `list_hlo_modules`).
 
     The xprof server must be running locally. Start it with:
       xprof --logdir=<path_to_profiles> --port=8791

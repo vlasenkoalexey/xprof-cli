@@ -4,9 +4,9 @@ An MCP server that lets AI assistants (Gemini, JetSki, etc.) analyze
 JAX / PyTorch-XLA / TensorFlow profiles on TPUs and GPUs via the open-source
 [xprof](https://github.com/openxla/xprof) profiler.
 
-This is the OSS counterpart of the internal `xprof_mcp` server. Instead of
-talking to Google-internal infrastructure, it connects to a locally running
-`xprof` HTTP server and reads `.xplane.pb` files directly from disk.
+This is the OSS version of `xprof_mcp` — it works with open-source tooling,
+connecting to a locally running `xprof` HTTP server and reading `.xplane.pb`
+files directly from disk.
 
 **See also:** [TPU Performance Optimization Guide](docs/TPU_OPTIMIZATION.md) — practical guide covering the roofline model, common gotchas (dimension alignment, dtype, fusion failures, KV cache, rematerialization), training and inference optimization strategies, and decision trees for diagnosing bottlenecks.
 
@@ -317,15 +317,6 @@ get_hlo_dump("module_0006.jit_my_fn", "after_optimizations")
 6. **`get_memory_profile(run)`** — memory pressure analysis
 7. **`list_xplane_events(run)`** / **`aggregate_xplane_events(run)`** — timeline deep-dive
 
-## Differences from Internal xprof_mcp
-
-| Feature | Internal | OSS (this) |
-|---------|----------|------------|
-| Backend | `xprof_analysis_client` RPC | HTTP to local xprof server |
-| Session IDs | Opaque IDs from xprof service | Run directory names |
-| `find_session` | XManager / Borg / F1 query | `list_runs` (HTTP) |
-| op_profile | Binary proto via RPC | `hlo_stats` JSON endpoint |
-| HLO content | `xla_client.HloModule` | `graph_viewer` HTTP endpoint |
 
 ---
 

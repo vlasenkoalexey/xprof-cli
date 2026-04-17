@@ -1,6 +1,6 @@
 # TPU Performance Optimization Guide
 
-Practical guide to diagnosing and optimizing JAX/PyTorch-XLA/TensorFlow workloads on TPUs, synthesized from Google's internal performance playbooks and the scaling-book. Gotchas and process are emphasized.
+Practical guide to diagnosing and optimizing JAX/PyTorch-XLA/TensorFlow workloads on TPUs, synthesized from multiple public sources (see [Sources](#10-sources) below). Gotchas and process are emphasized.
 
 ---
 
@@ -447,5 +447,4 @@ This guide synthesizes content from:
 - [Cloud TPU Performance Guide](https://cloud.google.com/tpu/docs/performance-guide) (Google Cloud Docs, 2026)
 - [How to Scale Your Model (2025)](https://jax-ml.github.io/scaling-book/) — the scaling book; Chapters 1 (roofline), 3 (sharding), 7 (inference)
 - [FlashAttention (Dao et al., 2022)](https://arxiv.org/abs/2205.14135)
-- The Ultra-Scale Playbook (HuggingFace / nanotron) — selective AC numbers
-- qihqi JAX inference tutorial series (Parts 1–4) — StaticCache speedup numbers
+- [The Ultra-Scale Playbook](https://huggingface.co/spaces/nanotron/ultrascale-playbook) (HuggingFace / nanotron) — selective AC numbers
