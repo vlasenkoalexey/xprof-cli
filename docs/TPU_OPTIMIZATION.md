@@ -222,7 +222,7 @@ def layer_fn(x): ...
 # PyTorch/XLA: torch.distributed.algorithms.checkpoint_wrapper
 ```
 
-**Rule of thumb:** if memory headroom > 20%, try reducing remat. Example: changing policy in Gemini M SFT (VLP): 5891 ms → 5594 ms.
+**Rule of thumb:** if memory headroom > 20%, try reducing remat. 
 
 ### 4.7 All-reduce in tensor parallelism
 

@@ -1,6 +1,6 @@
 # XProf MCP Server (OSS)
 
-An MCP server that lets AI assistants (Gemini, JetSki, etc.) analyze
+An MCP server that lets AI assistants (Gemini, Claude Code, Cursor, etc.) analyze
 JAX / PyTorch-XLA / TensorFlow profiles on TPUs and GPUs via the open-source
 [xprof](https://github.com/openxla/xprof) profiler.
 
