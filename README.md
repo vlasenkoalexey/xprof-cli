@@ -197,8 +197,44 @@ xprof_mcp/
 | `get_hlo_dump` | Read HLO text at a specific compilation stage | No |
 | `diff_hlo_stages` | Unified diff between two compilation stages | No |
 | `get_hlo_dump_neighborhood` | BFS neighborhood from a dump file | No |
+| `check_kernel_profiling` | Were the kernel-profiling (LLO) flags active at capture? | Yes |
+| `list_kernel_invocations` | Pallas/Mosaic custom-call executions + duration stats | Yes |
+| `get_llo_utilization` | Per-functional-unit LLO `% util` (MXU/ALU/loads/...) — kernel bottleneck verdict | Yes |
+| `get_kernel_stage_breakdown` | Mosaic pipeline stage times (`ep_*`) + DMA wait_ratio | Yes |
+| `list_llo_programs` | Programs & pass checkpoints in an `--xla_jf_dump_to` LLO dump dir | No |
+| `get_llo_schedule_analysis` | Bundle counts per HLO op / opcode (static attribution) | No |
+| `get_llo_static_utilization` | Per-bundle slot occupancy vs capacity + hot ranges | No |
+| `get_llo_bundles` | Windowed VLIW bundle listing (by address range / grep) | No |
+| `get_custom_call_mlir` | Lowered Mosaic MLIR for a Pallas kernel (noop audit) | No |
 
 "Needs TF?" = requires `tensorflow-cpu` and `XPROF_LOGDIR` to be set.
+
+### Kernel profiling / LLO workflow
+
+Capture with the XProf Kernel Profiling flags to light up the LLO-level tools:
+
+```bash
+# Trace-side (LLO utilization tracks, bundle markers, Mosaic ep_* stages):
+LIBTPU_INIT_ARGS="--xla_enable_custom_call_region_trace=true \
+                  --xla_xprof_register_llo_debug_info=true" \
+python your_pallas_workload.py   # with jax.profiler.trace(logdir)
+
+# Dump-side (per-pass LLO IR: VLIW bundles, per-bundle slot utilization):
+LIBTPU_INIT_ARGS="--xla_jf_dump_to=/tmp/jf_dump --xla_jf_dump_llo_text=true \
+                  --xla_mosaic_dump_to=/tmp/mosaic_dump" \
+python your_pallas_workload.py
+export XLA_JF_DUMP_DIR=/tmp/jf_dump
+```
+
+Note: the LLO dumper uses its own `--xla_jf_dump_to` flag — XLA's
+`--xla_dump_to` does **not** receive LLO dumps. Analysis flow:
+`check_kernel_profiling` → `list_kernel_invocations` → `get_llo_utilization`
+/ `get_kernel_stage_breakdown` → (drilldown) `list_llo_programs` →
+`get_llo_static_utilization` → `get_llo_bundles`, with `get_custom_call_mlir`
+as the structural did-it-lower-as-planned audit. The `Tensor Core` trace
+markers carry bundle addresses that plug directly into `get_llo_bundles`'
+`address_range`. Trace `% util` values are LLO static slot occupancy over
+measured time windows; raw runtime counter sampling requires TPU v7+.
 
 ---
 
@@ -208,6 +244,7 @@ xprof_mcp/
 |---------|---------|-------------|
 | `XPROF_URL` | `http://localhost:8791` | URL of the running xprof server |
 | `XPROF_LOGDIR` | *(auto-detected)* | Path passed to `xprof --logdir=...`. Required only for XPlane timeline tools (`list_xplane_events`, `aggregate_xplane_events`, `get_xspace_proto`). When the xprof server runs on localhost, the MCP server detects it automatically from the server process; set explicitly for remote servers or GCS paths. |
+| `XLA_JF_DUMP_DIR` | *(unset)* | `--xla_jf_dump_to` directory for the LLO dump tools (`list_llo_programs`, `get_llo_bundles`, ...). |
 | `XLA_HLO_DUMP_DIR` | *(empty)* | Directory the MCP dump tools read from (set to the same path as `--xla_dump_to`). Optional — can also be passed per-call as `dump_dir`. |
 
 ---

@@ -55,6 +55,9 @@ from mcp.server import fastmcp
 
 from xprof_mcp.internal import hlo_dump_tools
 from xprof_mcp.internal import hlo_tools
+from xprof_mcp.internal import kernel_profiling_tools
+from xprof_mcp.internal import llo_dump_tools
+from xprof_mcp.internal import mosaic_tools
 from xprof_mcp.internal import xplane_tools
 from xprof_mcp.internal import xprof_data
 from xprof_mcp.tools import get_memory_profile_tool
@@ -105,6 +108,23 @@ mcp.add_tool(hlo_dump_tools.list_hlo_dump_modules)
 mcp.add_tool(hlo_dump_tools.get_hlo_dump)
 mcp.add_tool(hlo_dump_tools.diff_hlo_stages)
 mcp.add_tool(hlo_dump_tools.get_hlo_dump_neighborhood)
+
+# ---------------------------------------------------------------------------
+# Kernel profiling / LLO tools (Pallas-level analysis)
+#   Trace-side: require tensorflow + XPROF_LOGDIR and a capture made with
+#     LIBTPU_INIT_ARGS="--xla_enable_custom_call_region_trace=true \
+#                       --xla_xprof_register_llo_debug_info=true"
+#   Dump-side: read --xla_jf_dump_to / --xla_mosaic_dump_to directories.
+# ---------------------------------------------------------------------------
+mcp.add_tool(kernel_profiling_tools.check_kernel_profiling)
+mcp.add_tool(kernel_profiling_tools.list_kernel_invocations)
+mcp.add_tool(kernel_profiling_tools.get_llo_utilization)
+mcp.add_tool(kernel_profiling_tools.get_kernel_stage_breakdown)
+mcp.add_tool(llo_dump_tools.list_llo_programs)
+mcp.add_tool(llo_dump_tools.get_llo_schedule_analysis)
+mcp.add_tool(llo_dump_tools.get_llo_static_utilization)
+mcp.add_tool(llo_dump_tools.get_llo_bundles)
+mcp.add_tool(mosaic_tools.get_custom_call_mlir)
 
 
 # ---------------------------------------------------------------------------
