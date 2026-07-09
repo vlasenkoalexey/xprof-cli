@@ -163,15 +163,21 @@ xprof_mcp/
 │   ├── xprof_data.py      # get_profile_summary, get_hlo_op_profile, get_hosts
 │   ├── hlo_tools.py       # list_hlo_modules, get_hlo_module_content,
 │   │                      #   get_hlo_neighborhood
-│   └── xplane_tools.py    # list_xplane_events, aggregate_xplane_events,
-│                          #   get_xspace_proto  (require tensorflow)
+│   ├── xplane_tools.py    # list_xplane_events, aggregate_xplane_events,
+│   │                      #   get_xspace_proto  (require tensorflow)
+│   ├── kernel_profiling_tools.py  # check_kernel_profiling, list_kernel_invocations,
+│   │                      #   get_llo_utilization, get_kernel_stage_breakdown
+│   ├── llo_dump_tools.py  # list_llo_programs, get_llo_schedule_analysis,
+│   │                      #   get_llo_static_utilization, get_llo_bundles
+│   └── mosaic_tools.py    # get_custom_call_mlir
 ├── tools/
 │   ├── list_runs_tool.py           # list_runs
 │   ├── get_overview_tool.py        # get_overview
 │   ├── get_memory_profile_tool.py  # get_memory_profile
 │   └── get_top_hlo_ops_tool.py     # get_top_hlo_ops
-└── server/
-    └── xprof_mcp_server.py  # FastMCP entry point
+├── server/
+│   └── xprof_mcp_server.py  # FastMCP entry point
+└── tests/                 # pytest suite + real v6e trace/dump fixtures
 ```
 
 ---
@@ -235,6 +241,8 @@ as the structural did-it-lower-as-planned audit. The `Tensor Core` trace
 markers carry bundle addresses that plug directly into `get_llo_bundles`'
 `address_range`. Trace `% util` values are LLO static slot occupancy over
 measured time windows; raw runtime counter sampling requires TPU v7+.
+Full guide (capture recipes, failure signatures, flag discovery):
+[docs/KERNEL_PROFILING.md](docs/KERNEL_PROFILING.md).
 
 ---
 
