@@ -22,7 +22,61 @@ needed for the interactive trace-viewer UI, not for analysis.
 
 ---
 
-## Quick Start
+## What's here
+
+One shared tool core (`tool_registry.py`, 35 tools) with two frontends:
+
+| Frontend | Entry point | Use it when |
+|---|---|---|
+| **CLI (recommended)** | `xprof-cli <tool> --logdir=... [--run=...]` | Any agent or human with a shell. No server, no wiring; every invocation sees the latest captures; per-tool `--help` from the same docstrings that drive the MCP schemas. |
+| **MCP server (preserved)** | `xprof-mcp` / `python -m xprof_mcp.server.xprof_mcp_server` | Assistants that prefer structured tools (Claude Code agents, Gemini). Identical tool surface. |
+
+Functionality highlights (see the [full tool table](#available-tools) below):
+
+- **Whole-model analyses**: overview, top HLO ops, op profile, memory
+  profile, device info, consolidated `get_kpi_metrics`.
+- **Roofline** (`get_roofline_model`): per-op compute- vs memory-bound
+  classification with ridge points — **caveat-annotated in the output**
+  (FLOPs/bytes are XLA cost-model estimates; custom calls are invisible
+  to it; there is no communication-bound class; no HW counters on
+  TPU v5p/v6e). Read the `caveats` field before acting on the numbers.
+- **Communication**: `get_pod_viewer` (ICI/step breakdown),
+  `get_megascale_stats` (DCN/multi-slice) — the comm attribution the
+  roofline model structurally lacks.
+- **Memory attribution**: `get_memory_viewer` — per-buffer HBM map
+  (which tensor holds the peak), beyond `get_memory_profile`'s scalar.
+- **Host/input pipeline**: `get_input_pipeline`, plus
+  `get_framework_op_stats` (device time by framework op name) and
+  `get_smart_suggestions` (xprof's automated triage).
+- **HLO**: module listing/content, instruction-neighborhood BFS, XLA dump
+  reading + stage diffing (`--xla_dump_to` dirs, no trace needed).
+- **Pallas / Mosaic kernel internals** (unique to this repo): LLO
+  per-functional-unit utilization, Mosaic pipeline stage breakdown with
+  DMA `wait_ratio`, VLIW bundle inspection, lowered-MLIR audit, and a
+  capture-flag sanity check (`check_kernel_profiling`).
+- **In-process by default**: tools read `.xplane.pb` and dump dirs
+  directly and run the OSS xprof converters in this process
+  (`XPROF_MODE=local`). The old server-backed path is kept as
+  `XPROF_MODE=http`.
+- **CLI result cache**: per-user SQLite cache (1h TTL) keyed on args
+  **and the profile directory's mtime** — re-captured runs are never
+  served stale; errors are never cached; `--bypass_cache=True` forces
+  recompute.
+
+## Repo history
+
+This repo was **`vlasenkoalexey/xprof-mcp`** until 2026-07: an MCP-only
+wrapper. It was renamed (not forked — full commit history, issues, and
+stars carried over) when the CLI became the primary interface; GitHub
+permanently redirects all old URLs, so existing clones, submodules, and
+MCP client configs continue to work without changes. The Python package
+directory is still `xprof_mcp/` and the MCP entry point is unchanged —
+**all MCP functionality is preserved**; the CLI is simply the recommended
+way to consume the same tools.
+
+---
+
+## Quick Start (CLI — recommended)
 
 ### 1. Generate a profile
 
@@ -45,30 +99,41 @@ server = xp.start_server(9012)
 xp.trace('localhost:9012', '/tmp/profiles/', duration_ms=2000)
 ```
 
-### 2. Start the xprof server
+### 2. Install and run
+
+```bash
+cd /path/to/xprof-cli
+pip install -e '.[full]'    # xprof converters + tensorflow-cpu
+
+xprof-cli list_runs --logdir=/tmp/profiles
+xprof-cli get_overview --logdir=/tmp/profiles --run=<run>
+xprof-cli get_roofline_model --logdir=/tmp/profiles --run=<run>
+xprof-cli get_llo_utilization --logdir=/tmp/profiles --run=<run> --kernel=<name>
+
+xprof-cli                       # list all 35 commands
+xprof-cli get_overview -- --help   # per-tool help
+```
+
+No server required. Set `XPROF_LOGDIR` instead of passing `--logdir`
+each time. Results print to stdout as JSON; failures exit non-zero with
+a JSON error on stderr — script/agent friendly.
+
+### 3. (Optional) the interactive UI
+
+The xprof web UI is the one thing that still wants the server:
 
 ```bash
 pip install xprof
-xprof --logdir=/tmp/profiles --port=8791
+xprof --logdir=/tmp/profiles --port=8791   # browse http://localhost:8791
 ```
-
-Open `http://localhost:8791` to verify the UI loads and your profiles appear.
-
-### 3. Install the MCP server
-
-```bash
-cd /path/to/xprof_mcp
-pip install -r requirements.txt
-# Optional: for XPlane timeline tools
-pip install tensorflow-cpu
-```
-
-### 4. Connect to your AI assistant
-
-There are two modes. **SSE mode is recommended** for active development — it lets
-you restart or update the MCP server without restarting your AI assistant.
 
 ---
+
+## MCP server (preserved frontend)
+
+The same 35 tools over the Model Context Protocol. Two modes; **HTTP mode
+is recommended** for active development — you can restart the MCP server
+without restarting your assistant.
 
 #### Mode A: HTTP (recommended — restart-friendly)
 
@@ -167,10 +232,15 @@ restart whenever you update the MCP server code.
 ## Directory Structure
 
 ```
-xprof_mcp/
+xprof_mcp/                 # package dir keeps its pre-rename name on purpose
+├── tool_registry.py       # SINGLE source of truth: the 35-tool surface
+├── cli/
+│   ├── main.py            # xprof-cli entry point (fire over the registry)
+│   └── cache.py           # per-user SQLite result cache (mtime-salted TTL)
 ├── internal/
-│   ├── xprof_client.py    # HTTP client for the xprof server + disk access
-│   ├── xprof_data.py      # get_profile_summary, get_hlo_op_profile, get_hosts
+│   ├── xprof_client.py    # HTTP client (XPROF_MODE=http) + disk access + mode switch
+│   ├── local_client.py    # in-process converters (XPROF_MODE=local, default)
+│   ├── xprof_data.py      # get_profile_summary, get_op_profile, get_hosts, ...
 │   ├── hlo_tools.py       # list_hlo_modules, get_hlo_module_content,
 │   │                      #   get_hlo_neighborhood
 │   ├── xplane_tools.py    # list_xplane_events, aggregate_xplane_events,
@@ -181,28 +251,43 @@ xprof_mcp/
 │   │                      #   get_llo_static_utilization, get_llo_bundles
 │   └── mosaic_tools.py    # get_custom_call_mlir
 ├── tools/
+│   ├── analysis_tools.py  # roofline / pod / megascale / memory_viewer /
+│   │                      #   input_pipeline / framework_op_stats /
+│   │                      #   smart_suggestions / kpi_metrics
 │   ├── list_runs_tool.py           # list_runs
 │   ├── get_overview_tool.py        # get_overview
 │   ├── get_memory_profile_tool.py  # get_memory_profile
 │   └── get_top_hlo_ops_tool.py     # get_top_hlo_ops
 ├── server/
-│   └── xprof_mcp_server.py  # FastMCP entry point
+│   └── xprof_mcp_server.py  # FastMCP entry point (iterates the registry)
 └── tests/                 # pytest suite + real v6e trace/dump fixtures
 ```
 
 ---
 
-## Available MCP Tools
+<a id="available-tools"></a>
+## Available Tools
+
+Every tool is simultaneously a CLI subcommand and an MCP tool — one
+registry (`tool_registry.py`), two frontends.
 
 | Tool | Description | Needs TF? |
 |------|-------------|-----------|
-| `list_runs` | List profiling sessions on the server | No |
+| `list_runs` | List profiling sessions in the logdir | No |
 | `get_hosts` | List hosts in a run | No |
 | `get_overview` | Step time, device utilization, run environment | No |
 | `get_memory_profile` | Peak HBM usage, heap/stack breakdown | No |
 | `get_top_hlo_ops` | Top ops by time, FLOPs, bytes accessed | No |
 | `get_profile_summary` | Text summary of top ops | No |
 | `get_device_information` | Accelerator specs from Roofline Model | No |
+| `get_kpi_metrics` | Consolidated headline KPIs (step time, duty cycle, MXU, peak HBM) | No |
+| `get_roofline_model` | Per-op compute/memory-bound classification + ridge points — **caveat-annotated** (cost-model FLOPs; custom-call-blind; no comm class) | No |
+| `get_pod_viewer` | Pod-level step breakdown + ICI collective stats | No |
+| `get_megascale_stats` | Multi-slice DCN collective stats (per-rendezvous) | No |
+| `get_memory_viewer` | Per-buffer HBM attribution for one HLO module (which tensor holds peak) | No |
+| `get_input_pipeline` | Host-vs-device input-pipeline stall decomposition | No |
+| `get_framework_op_stats` | Device time by framework-level op name (JAX/PyTorch/TF) | No |
+| `get_smart_suggestions` | xprof's automated bottleneck triage | No |
 | `list_hlo_modules` | List compiled HLO programs in a run | No |
 | `get_hlo_module_content` | Full HLO text for a module | No |
 | `get_hlo_neighborhood` | BFS neighborhood of an HLO instruction | No |
@@ -260,8 +345,9 @@ Full guide (capture recipes, failure signatures, flag discovery):
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `XPROF_URL` | `http://localhost:8791` | URL of the running xprof server |
-| `XPROF_LOGDIR` | *(auto-detected)* | Path passed to `xprof --logdir=...`. Required only for XPlane timeline tools (`list_xplane_events`, `aggregate_xplane_events`, `get_xspace_proto`). When the xprof server runs on localhost, the MCP server detects it automatically from the server process; set explicitly for remote servers or GCS paths. |
+| `XPROF_MODE` | *(auto)* | `local` = in-process converters, no server (CLI default); `http` = talk to a running xprof server at `XPROF_URL` (legacy mode); unset = local when converters + logdir are available, else http. |
+| `XPROF_LOGDIR` | *(auto-detected)* | Root of the profile captures (the path you'd pass to `xprof --logdir=...`). Required for local mode and disk-based tools; the CLI's `--logdir` flag sets it per-call. Auto-detected from a localhost xprof server process when one is running. GCS paths work with tensorflow installed. |
+| `XPROF_URL` | `http://localhost:8791` | URL of the running xprof server — **only used in http mode**. |
 | `XLA_JF_DUMP_DIR` | *(unset)* | `--xla_jf_dump_to` directory for the LLO dump tools (`list_llo_programs`, `get_llo_bundles`, ...). |
 | `XLA_HLO_DUMP_DIR` | *(empty)* | Directory the MCP dump tools read from (set to the same path as `--xla_dump_to`). Optional — can also be passed per-call as `dump_dir`. |
 
@@ -297,9 +383,9 @@ export XLA_FLAGS="--xla_dump_to=/tmp/hlo_dumps \
                   --xla_dump_hlo_pass_re=.*"
 python your_script.py
 
-# Step 2 — tell the MCP server where to find those files:
-export XLA_HLO_DUMP_DIR=/tmp/hlo_dumps  # same path as --xla_dump_to
-python -m xprof_mcp.server.xprof_mcp_server --transport http
+# Step 2 — point the tools at those files (CLI):
+xprof-cli list_hlo_dump_modules --dump_dir=/tmp/hlo_dumps
+# or set XLA_HLO_DUMP_DIR=/tmp/hlo_dumps (used by both CLI and MCP server)
 ```
 
 **Recommended format: `--xla_dump_hlo_as_text`** (default above). This produces human-readable
