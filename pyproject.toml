@@ -29,6 +29,16 @@ xplane = [
 xprof-cli = "xprof_mcp.cli.main:main"
 xprof-mcp = "xprof_mcp.server.xprof_mcp_server:main"
 
-[tool.setuptools.packages.find]
-where = [".."]
-include = ["xprof_mcp*"]
+[tool.setuptools]
+# The repo root IS the xprof_mcp package (flat layout kept across the
+# xprof-mcp -> xprof-cli rename so module paths never changed). Map it
+# explicitly so `pip install` works from any checkout directory name —
+# no sibling symlink required.
+package-dir = {"xprof_mcp" = "."}
+packages = [
+    "xprof_mcp",
+    "xprof_mcp.cli",
+    "xprof_mcp.internal",
+    "xprof_mcp.server",
+    "xprof_mcp.tools",
+]
