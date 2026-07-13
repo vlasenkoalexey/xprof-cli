@@ -5,3 +5,5 @@ dist/
 build/
 .venv/
 *.op_stats_v2.pb
+cache_version.txt
+.cached_tools.json
