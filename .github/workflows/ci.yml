@@ -1,0 +1,34 @@
+name: tests
+
+on:
+  push:
+    branches: [main, cli-frontend]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        # tests/conftest.py makes the repo importable as `xprof_mcp`
+        # regardless of the checkout directory name, so no editable
+        # install is needed here.
+        run: |
+          pip install mcp requests protobuf fire pytest
+          pip install xprof tensorflow-cpu
+
+      - name: Run test suite
+        env:
+          TF_CPP_MIN_LOG_LEVEL: "3"
+        run: pytest tests/ -q

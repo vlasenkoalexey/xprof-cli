@@ -18,3 +18,22 @@ if "xprof_mcp" not in sys.modules:
     spec.loader.exec_module(mod)
 
 FIXTURES = os.path.join(_REPO_ROOT, "tests", "fixtures")
+FIXTURE_LOGDIR = os.path.join(FIXTURES, "logdir")
+FIXTURE_RUN = "testrun"
+
+try:
+    import pytest
+
+    @pytest.fixture
+    def local_mode(monkeypatch):
+        """Fresh in-process client bound to the fixture logdir."""
+        from xprof_mcp.internal import xprof_client
+
+        monkeypatch.setenv("XPROF_MODE", "local")
+        monkeypatch.setenv("XPROF_LOGDIR", FIXTURE_LOGDIR)
+        xprof_client.set_client(None)
+        yield
+        xprof_client.set_client(None)
+
+except ImportError:  # conftest is also imported by non-pytest tooling
+    pass
