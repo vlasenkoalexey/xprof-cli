@@ -19,6 +19,7 @@ from xprof_mcp.internal import llo_dump_tools
 from xprof_mcp.internal import mosaic_tools
 from xprof_mcp.internal import xplane_tools
 from xprof_mcp.internal import xprof_data
+from xprof_mcp.tools import analysis_tools
 from xprof_mcp.tools import get_memory_profile_tool
 from xprof_mcp.tools import get_overview_tool
 from xprof_mcp.tools import get_top_hlo_ops_tool
@@ -38,6 +39,15 @@ ALL_TOOLS: "OrderedDict[str, Callable]" = OrderedDict(
         xprof_data.get_op_profile,
         xprof_data.get_profile_summary,
         xprof_data.get_device_information,
+        analysis_tools.get_kpi_metrics,
+        # Whole-model analyses (roofline, comm, memory, host pipeline)
+        analysis_tools.get_roofline_model,
+        analysis_tools.get_pod_viewer,
+        analysis_tools.get_megascale_stats,
+        analysis_tools.get_memory_viewer,
+        analysis_tools.get_input_pipeline,
+        analysis_tools.get_framework_op_stats,
+        analysis_tools.get_smart_suggestions,
         # HLO analysis
         hlo_tools.list_hlo_modules,
         hlo_tools.get_hlo_module_content,
