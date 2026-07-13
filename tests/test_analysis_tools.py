@@ -115,6 +115,23 @@ def test_framework_op_stats_schema(local_mode):
     assert "operation" in out["records"][0]
 
 
+def test_utilization_viewer_schema(local_mode):
+    out = json.loads(analysis_tools.get_utilization_viewer(FIXTURE_RUN))
+    assert "error" not in out
+    assert isinstance(out["records"], list)
+    if out["records"]:
+        assert "achieved" in out["records"][0]
+
+
+def test_detect_unfused_reshapes_schema(local_mode):
+    from xprof_mcp.tools import detect_tools
+
+    out = json.loads(detect_tools.detect_unfused_reshapes(FIXTURE_RUN))
+    assert "error" not in out
+    assert "bottlenecks_found" in out
+    assert isinstance(out["inefficient_ops"], list)
+
+
 def test_smart_suggestions_schema(local_mode):
     out = json.loads(analysis_tools.get_smart_suggestions(FIXTURE_RUN))
     assert "error" not in out

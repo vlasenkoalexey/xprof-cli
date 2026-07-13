@@ -20,6 +20,7 @@ from xprof_mcp.internal import mosaic_tools
 from xprof_mcp.internal import xplane_tools
 from xprof_mcp.internal import xprof_data
 from xprof_mcp.tools import analysis_tools
+from xprof_mcp.tools import detect_tools
 from xprof_mcp.tools import get_memory_profile_tool
 from xprof_mcp.tools import get_overview_tool
 from xprof_mcp.tools import get_top_hlo_ops_tool
@@ -47,7 +48,9 @@ ALL_TOOLS: "OrderedDict[str, Callable]" = OrderedDict(
         analysis_tools.get_memory_viewer,
         analysis_tools.get_input_pipeline,
         analysis_tools.get_framework_op_stats,
+        analysis_tools.get_utilization_viewer,
         analysis_tools.get_smart_suggestions,
+        detect_tools.detect_unfused_reshapes,
         # HLO analysis
         hlo_tools.list_hlo_modules,
         hlo_tools.get_hlo_module_content,

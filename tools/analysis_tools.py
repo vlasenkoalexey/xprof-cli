@@ -331,6 +331,34 @@ def get_framework_op_stats(run: str, host: str = "", limit: int = 40) -> str:
         return _error("get_framework_op_stats", run, e)
 
 
+def get_utilization_viewer(run: str, host: str = "", limit: int = 100) -> str:
+    """Sampled utilization timeline: achieved vs peak per node over time.
+
+    Complements the single-number duty cycle from get_overview with a
+    time-resolved view — reveals utilization phases (warmup, steady-state,
+    stragglers) a scalar average hides.
+
+    Args:
+        run: Profile run name.
+        host: Specific host, or empty for all hosts.
+        limit: Max sample rows returned.
+
+    Returns:
+        JSON: {run, records}.
+    """
+    try:
+        payload = _fetch_json(
+            "utilization_viewer", run, host=host or "ALL_HOSTS"
+        )
+        table = payload[0] if isinstance(payload, list) else payload
+        return json.dumps(
+            {"run": run, "records": _datatable_records(table, limit=limit)},
+            indent=2,
+        )
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        return _error("get_utilization_viewer", run, e)
+
+
 def get_smart_suggestions(run: str, host: str = "") -> str:
     """xprof's own automated bottleneck triage suggestions.
 

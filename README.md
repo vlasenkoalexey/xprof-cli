@@ -24,7 +24,7 @@ needed for the interactive trace-viewer UI, not for analysis.
 
 ## What's here
 
-One shared tool core (`tool_registry.py`, 35 tools) with two frontends:
+One shared tool core (`tool_registry.py`, 37 tools) with two frontends:
 
 | Frontend | Entry point | Use it when |
 |---|---|---|
@@ -110,7 +110,7 @@ xprof-cli get_overview --logdir=/tmp/profiles --run=<run>
 xprof-cli get_roofline_model --logdir=/tmp/profiles --run=<run>
 xprof-cli get_llo_utilization --logdir=/tmp/profiles --run=<run> --kernel=<name>
 
-xprof-cli                       # list all 35 commands
+xprof-cli                       # list all 37 commands
 xprof-cli get_overview -- --help   # per-tool help
 ```
 
@@ -131,7 +131,7 @@ xprof --logdir=/tmp/profiles --port=8791   # browse http://localhost:8791
 
 ## MCP server (preserved frontend)
 
-The same 35 tools over the Model Context Protocol. Two modes; **HTTP mode
+The same 37 tools over the Model Context Protocol. Two modes; **HTTP mode
 is recommended** for active development — you can restart the MCP server
 without restarting your assistant.
 
@@ -233,7 +233,7 @@ restart whenever you update the MCP server code.
 
 ```
 xprof_mcp/                 # package dir keeps its pre-rename name on purpose
-├── tool_registry.py       # SINGLE source of truth: the 35-tool surface
+├── tool_registry.py       # SINGLE source of truth: the 37-tool surface
 ├── cli/
 │   ├── main.py            # xprof-cli entry point (fire over the registry)
 │   └── cache.py           # per-user SQLite result cache (mtime-salted TTL)
@@ -287,7 +287,9 @@ registry (`tool_registry.py`), two frontends.
 | `get_memory_viewer` | Per-buffer HBM attribution for one HLO module (which tensor holds peak) | No |
 | `get_input_pipeline` | Host-vs-device input-pipeline stall decomposition | No |
 | `get_framework_op_stats` | Device time by framework-level op name (JAX/PyTorch/TF) | No |
+| `get_utilization_viewer` | Sampled utilization timeline (achieved vs peak over time) | No |
 | `get_smart_suggestions` | xprof's automated bottleneck triage | No |
+| `detect_unfused_reshapes` | Automated audit: standalone reshape/copy/transpose ops forcing HBM intermediates | No |
 | `list_hlo_modules` | List compiled HLO programs in a run | No |
 | `get_hlo_module_content` | Full HLO text for a module | No |
 | `get_hlo_neighborhood` | BFS neighborhood of an HLO instruction | No |
@@ -450,13 +452,45 @@ get_hlo_dump("module_0006.jit_my_fn", "after_optimizations")
 
 ## Recommended Analysis Workflow
 
-1. **`list_runs()`** — find available sessions
-2. **`get_overview(run)`** — step time, utilization, bottleneck category
-3. **`get_top_hlo_ops(run)`** — which ops use the most time / compute / memory
-4. **`list_hlo_modules(run)`** → **`get_hlo_module_content(run, module)`** — inspect compiled HLO
-5. **`get_hlo_neighborhood(run, instruction_name)`** — root-cause a slow op
-6. **`get_memory_profile(run)`** — memory pressure analysis
-7. **`list_xplane_events(run)`** / **`aggregate_xplane_events(run)`** — timeline deep-dive
+Same tool names in both frontends; CLI shown (`xprof-cli <tool>
+--logdir=... --run=...`).
+
+**1. Orient** — `list_runs` → `get_kpi_metrics` (headline numbers) →
+`get_overview` (bottleneck category, run environment).
+
+**2. Attribute** — `get_top_hlo_ops` (time / FLOPs / bytes leaderboards)
+and `get_roofline_model` (per-op compute- vs memory-bound + ridge
+points; **read its `caveats` field** — cost-model FLOPs, custom-call
+blind, no comm class).
+
+**3. Branch on the bottleneck:**
+
+| Signal | Next tools |
+|---|---|
+| Device idle / host-bound | `get_input_pipeline` (host stall decomposition), `get_utilization_viewer` (utilization over time) |
+| Collective-bound (multi-chip) | `get_pod_viewer` (ICI/step breakdown); multi-slice: `get_megascale_stats` (DCN per-rendezvous) |
+| Memory-bound / OOM hunting | `get_memory_profile` (peak + timeline) → `get_memory_viewer` (which buffer holds the peak, per module) |
+| Large copy/reshape/transpose in top ops | `detect_unfused_reshapes` (automated HBM-materialization audit) |
+| Compute-bound but low efficiency | `get_framework_op_stats` (map to framework op names), then the HLO lane below |
+| A Pallas/Mosaic kernel dominates | kernel lane below — roofline is blind here |
+
+**4. HLO root-cause** — `list_hlo_modules` → `get_hlo_module_content` →
+`get_hlo_neighborhood(instruction)`; compiler-stage questions:
+`list_hlo_dump_modules` / `get_hlo_dump` / `diff_hlo_stages` (from
+`--xla_dump_to`, no trace needed).
+
+**5. Kernel lane (Pallas/Mosaic)** — `check_kernel_profiling` (were the
+capture flags on? ALWAYS first) → `list_kernel_invocations` →
+`get_llo_utilization` (per-unit bottleneck verdict) /
+`get_kernel_stage_breakdown` (DMA `wait_ratio`) → drilldown
+`list_llo_programs` → `get_llo_static_utilization` → `get_llo_bundles`,
+with `get_custom_call_mlir` as the lowering audit. See
+[docs/KERNEL_PROFILING.md](docs/KERNEL_PROFILING.md).
+
+**6. Timeline deep-dive (anything else)** — `list_xplane_events` /
+`aggregate_xplane_events` with event regexes.
+
+`get_smart_suggestions` is a free second opinion at any point.
 
 
 ---
