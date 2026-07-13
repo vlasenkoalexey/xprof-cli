@@ -31,4 +31,6 @@ jobs:
       - name: Run test suite
         env:
           TF_CPP_MIN_LOG_LEVEL: "3"
-        run: pytest tests/ -q
+        # python -m (not bare pytest): inserts the checkout dir into
+        # sys.path so `tests.conftest` and the xprof_mcp bootstrap resolve.
+        run: python -m pytest tests/ -q
