@@ -53,17 +53,7 @@ import sys
 from mcp import types
 from mcp.server import fastmcp
 
-from xprof_mcp.internal import hlo_dump_tools
-from xprof_mcp.internal import hlo_tools
-from xprof_mcp.internal import kernel_profiling_tools
-from xprof_mcp.internal import llo_dump_tools
-from xprof_mcp.internal import mosaic_tools
-from xprof_mcp.internal import xplane_tools
-from xprof_mcp.internal import xprof_data
-from xprof_mcp.tools import get_memory_profile_tool
-from xprof_mcp.tools import get_overview_tool
-from xprof_mcp.tools import get_top_hlo_ops_tool
-from xprof_mcp.tools import list_runs_tool
+from xprof_mcp import tool_registry
 
 mcp = fastmcp.FastMCP(
     "XProf",
@@ -71,60 +61,10 @@ mcp = fastmcp.FastMCP(
     stateless_http=True,
 )
 
-# ---------------------------------------------------------------------------
-# Discovery / listing tools
-# ---------------------------------------------------------------------------
-mcp.add_tool(list_runs_tool.list_runs)
-mcp.add_tool(xprof_data.get_hosts)
-
-# ---------------------------------------------------------------------------
-# Performance summary tools
-# ---------------------------------------------------------------------------
-mcp.add_tool(get_overview_tool.get_overview)
-mcp.add_tool(get_memory_profile_tool.get_memory_profile)
-mcp.add_tool(get_top_hlo_ops_tool.get_top_hlo_ops)
-mcp.add_tool(xprof_data.get_op_profile)
-mcp.add_tool(xprof_data.get_profile_summary)
-mcp.add_tool(xprof_data.get_device_information)
-
-# ---------------------------------------------------------------------------
-# HLO analysis tools
-# ---------------------------------------------------------------------------
-mcp.add_tool(hlo_tools.list_hlo_modules)
-mcp.add_tool(hlo_tools.get_hlo_module_content)
-mcp.add_tool(hlo_tools.get_hlo_neighborhood)
-
-# ---------------------------------------------------------------------------
-# XPlane / timeline tools (require tensorflow + XPROF_LOGDIR)
-# ---------------------------------------------------------------------------
-mcp.add_tool(xplane_tools.list_xplane_events)
-mcp.add_tool(xplane_tools.aggregate_xplane_events)
-mcp.add_tool(xplane_tools.get_xspace_proto)
-
-# ---------------------------------------------------------------------------
-# XLA HLO dump tools (read from --xla_dump_to directory, no server needed)
-# ---------------------------------------------------------------------------
-mcp.add_tool(hlo_dump_tools.list_hlo_dump_modules)
-mcp.add_tool(hlo_dump_tools.get_hlo_dump)
-mcp.add_tool(hlo_dump_tools.diff_hlo_stages)
-mcp.add_tool(hlo_dump_tools.get_hlo_dump_neighborhood)
-
-# ---------------------------------------------------------------------------
-# Kernel profiling / LLO tools (Pallas-level analysis)
-#   Trace-side: require tensorflow + XPROF_LOGDIR and a capture made with
-#     LIBTPU_INIT_ARGS="--xla_enable_custom_call_region_trace=true \
-#                       --xla_xprof_register_llo_debug_info=true"
-#   Dump-side: read --xla_jf_dump_to / --xla_mosaic_dump_to directories.
-# ---------------------------------------------------------------------------
-mcp.add_tool(kernel_profiling_tools.check_kernel_profiling)
-mcp.add_tool(kernel_profiling_tools.list_kernel_invocations)
-mcp.add_tool(kernel_profiling_tools.get_llo_utilization)
-mcp.add_tool(kernel_profiling_tools.get_kernel_stage_breakdown)
-mcp.add_tool(llo_dump_tools.list_llo_programs)
-mcp.add_tool(llo_dump_tools.get_llo_schedule_analysis)
-mcp.add_tool(llo_dump_tools.get_llo_static_utilization)
-mcp.add_tool(llo_dump_tools.get_llo_bundles)
-mcp.add_tool(mosaic_tools.get_custom_call_mlir)
+# The tool surface is defined once in tool_registry.ALL_TOOLS and shared
+# with the CLI frontend (cli/main.py). Docstrings become tool descriptions.
+for _tool_fn in tool_registry.ALL_TOOLS.values():
+    mcp.add_tool(_tool_fn)
 
 
 # ---------------------------------------------------------------------------
