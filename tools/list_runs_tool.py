@@ -26,9 +26,11 @@ def list_runs() -> str:
     try:
         runs = client.get_runs()
 
+        is_local = type(client).__name__ == "LocalXprofClient"
         return json.dumps(
             {
-                "server": client.base_url,
+                "mode": "local (in-process, no server)" if is_local
+                else f"http ({client.base_url})",
                 "logdir": client.logdir or "(not set — set XPROF_LOGDIR for disk-based tools)",
                 "runs": runs,
                 "count": len(runs),

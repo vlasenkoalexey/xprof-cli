@@ -156,6 +156,10 @@ class OSSXprofClient:
     def logdir(self) -> str:
         return self._logdir
 
+    def set_logdir(self, logdir: str) -> None:
+        """Overrides the logdir (used by the CLI's --logdir flag)."""
+        self._logdir = logdir or ""
+
     # ------------------------------------------------------------------
     # Listing endpoints
     # ------------------------------------------------------------------
@@ -322,10 +326,44 @@ class OSSXprofClient:
 # Global singleton
 # ---------------------------------------------------------------------------
 
+def _make_default_client() -> OSSXprofClient:
+    """Chooses the client implementation.
+
+    XPROF_MODE env var:
+      local  - in-process converters (error at use-time if unavailable)
+      http   - talk to a running xprof server at XPROF_URL (legacy mode)
+      unset  - auto: local when the xprof converters are importable AND a
+               logdir is resolvable (XPROF_LOGDIR or procfs detection of a
+               localhost server); otherwise fall back to HTTP.
+    """
+    # Import here to avoid a circular import (local_client subclasses
+    # OSSXprofClient from this module).
+    from xprof_mcp.internal import local_client  # pylint: disable=g-import-not-at-top
+
+    mode = os.environ.get("XPROF_MODE", "").lower()
+    if mode == "http":
+        return OSSXprofClient()
+    if mode == "local":
+        if not local_client.converters_available():
+            raise RuntimeError(
+                "XPROF_MODE=local but the xprof converters are not "
+                "installed. Run: pip install 'xprof-cli[full]' "
+                "(or: pip install xprof tensorflow-cpu)."
+            )
+        return local_client.LocalXprofClient()
+    client = local_client.try_create()
+    if client is not None:
+        logging.info("xprof client: local in-process mode (logdir=%s)",
+                     client.logdir)
+        return client
+    logging.info("xprof client: HTTP mode (converters or logdir unavailable)")
+    return OSSXprofClient()
+
+
 def get_client() -> OSSXprofClient:
     global _INSTANCE
     if _INSTANCE is None:
-        _INSTANCE = OSSXprofClient()
+        _INSTANCE = _make_default_client()
     return _INSTANCE
 
 
