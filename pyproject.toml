@@ -3,22 +3,30 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "xprof-mcp"
-version = "0.1.0"
-description = "MCP server for OSS XProf (openxla/xprof) profiler"
+name = "xprof-cli"
+version = "0.2.0"
+description = "CLI-first TPU/GPU profile analysis for AI agents (OSS xprof) — also ships an MCP server"
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.0.0",
     "requests>=2.28.0",
     "protobuf>=3.20.0",
+    "fire>=0.5.0",
 ]
 
 [project.optional-dependencies]
+# In-process conversion (recommended): xprof converters + xplane/GCS reading.
+# Without these extras the tools fall back to a running xprof HTTP server.
+full = [
+    "xprof>=2.20.0",
+    "tensorflow-cpu>=2.13.0",
+]
 xplane = [
     "tensorflow-cpu>=2.13.0",
 ]
 
 [project.scripts]
+xprof-cli = "xprof_mcp.cli.main:main"
 xprof-mcp = "xprof_mcp.server.xprof_mcp_server:main"
 
 [tool.setuptools.packages.find]

@@ -1,12 +1,22 @@
-# 🔌 XProf MCP Server (OSS)
+# 🛠️ XProf CLI
 
-An MCP server that lets AI assistants (Gemini, Claude Code, Cursor, etc.) analyze
-JAX / PyTorch-XLA / TensorFlow profiles on TPUs and GPUs via the open-source
-[xprof](https://github.com/openxla/xprof) profiler.
+CLI-first TPU/GPU profile analysis for AI agents and humans — analyze
+JAX / PyTorch-XLA / TensorFlow profiles via the open-source
+[xprof](https://github.com/openxla/xprof) profiler. **Also ships an MCP
+server** for assistants that prefer structured tools (Claude Code, Gemini,
+Cursor, etc.).
 
-This is the OSS version of `xprof_mcp` — it works with open-source tooling,
-connecting to a locally running `xprof` HTTP server and reading `.xplane.pb`
-files directly from disk.
+> **Renamed from `xprof-mcp`** (2026-07). Same repo, full history preserved;
+> GitHub redirects all old URLs, so existing clones, submodules, and MCP
+> client configs keep working unchanged. The MCP server is retained as a
+> fully supported frontend — but the **CLI is the recommended interface**:
+> it needs no running server, no MCP wiring, picks up new profiles on every
+> invocation, and works identically from any agent framework that can run
+> a shell command.
+
+Tools read `.xplane.pb` traces and XLA/LLO dump directories directly from
+disk (in-process conversion); a locally running `xprof` HTTP server is only
+needed for the interactive trace-viewer UI, not for analysis.
 
 **See also:** [TPU Performance Optimization Guide](docs/TPU_OPTIMIZATION.md) — practical guide covering the roofline model, common gotchas (dimension alignment, dtype, fusion failures, KV cache, rematerialization), training and inference optimization strategies, and decision trees for diagnosing bottlenecks.
 
