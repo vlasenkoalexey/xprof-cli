@@ -49,6 +49,7 @@ ALL_TOOLS: "OrderedDict[str, Callable]" = OrderedDict(
         analysis_tools.get_input_pipeline,
         analysis_tools.get_framework_op_stats,
         analysis_tools.get_utilization_viewer,
+        analysis_tools.get_perf_counters,
         analysis_tools.get_smart_suggestions,
         detect_tools.detect_unfused_reshapes,
         # HLO analysis

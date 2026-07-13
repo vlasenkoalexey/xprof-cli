@@ -378,6 +378,52 @@ def get_smart_suggestions(run: str, host: str = "") -> str:
         return _error("get_smart_suggestions", run, e)
 
 
+def get_perf_counters(run: str, host: str = "", limit: int = 100) -> str:
+    """Hardware performance counters (TPU v7+/Ironwood; GPU).
+
+    Measured HW counters — the ground truth that cross-checks the
+    roofline's cost-model estimates. IMPORTANT: counter sampling is
+    silently absent on TPU v5p/v6e (empty result ≠ zero activity; it
+    means the hardware/runtime doesn't sample counters). On v7+ the
+    capture must enable counter sampling (see docs/KERNEL_PROFILING.md).
+
+    Args:
+        run: Profile run name.
+        host: Specific host, or empty for all hosts.
+        limit: Max rows per table.
+
+    Returns:
+        JSON: {run, tables, note} — tables empty on pre-v7 TPU captures.
+    """
+    try:
+        payload = _fetch_json("perf_counters", run, host=host or "ALL_HOSTS")
+        tables = payload if isinstance(payload, list) else [payload]
+        records = [
+            _datatable_records(t, limit=limit)
+            for t in tables
+            if isinstance(t, dict)
+        ]
+        empty = not any(records)
+        return json.dumps(
+            {
+                "run": run,
+                "tables": records,
+                "note": (
+                    "EMPTY: no counter samples in this capture. On TPU "
+                    "v5p/v6e counter sampling is silently unavailable — "
+                    "this is expected, not a capture error. On v7+ enable "
+                    "counter sampling at capture time."
+                )
+                if empty
+                else "Measured HW counters — ground truth vs the "
+                "roofline's cost-model estimates.",
+            },
+            indent=2,
+        )
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        return _error("get_perf_counters", run, e)
+
+
 def get_kpi_metrics(run: str) -> str:
     """Consolidated KPI summary: step time, duty cycle, MFU-ish, peak HBM.
 

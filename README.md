@@ -24,7 +24,7 @@ needed for the interactive trace-viewer UI, not for analysis.
 
 ## What's here
 
-One shared tool core (`tool_registry.py`, 37 tools) with two frontends:
+One shared tool core (`tool_registry.py`, 38 tools) with two frontends:
 
 | Frontend | Entry point | Use it when |
 |---|---|---|
@@ -110,7 +110,7 @@ xprof-cli get_overview --logdir=/tmp/profiles --run=<run>
 xprof-cli get_roofline_model --logdir=/tmp/profiles --run=<run>
 xprof-cli get_llo_utilization --logdir=/tmp/profiles --run=<run> --kernel=<name>
 
-xprof-cli                       # list all 37 commands
+xprof-cli                       # list all 38 commands
 xprof-cli get_overview -- --help   # per-tool help
 ```
 
@@ -131,7 +131,7 @@ xprof --logdir=/tmp/profiles --port=8791   # browse http://localhost:8791
 
 ## MCP server (preserved frontend)
 
-The same 37 tools over the Model Context Protocol. Two modes; **HTTP mode
+The same 38 tools over the Model Context Protocol. Two modes; **HTTP mode
 is recommended** for active development — you can restart the MCP server
 without restarting your assistant.
 
@@ -233,7 +233,7 @@ restart whenever you update the MCP server code.
 
 ```
 xprof_mcp/                 # package dir keeps its pre-rename name on purpose
-├── tool_registry.py       # SINGLE source of truth: the 37-tool surface
+├── tool_registry.py       # SINGLE source of truth: the 38-tool surface
 ├── cli/
 │   ├── main.py            # xprof-cli entry point (fire over the registry)
 │   └── cache.py           # per-user SQLite result cache (mtime-salted TTL)
@@ -288,6 +288,7 @@ registry (`tool_registry.py`), two frontends.
 | `get_input_pipeline` | Host-vs-device input-pipeline stall decomposition | No |
 | `get_framework_op_stats` | Device time by framework-level op name (JAX/PyTorch/TF) | No |
 | `get_utilization_viewer` | Sampled utilization timeline (achieved vs peak over time) | No |
+| `get_perf_counters` | Measured HW counters (TPU v7+/Ironwood; empty on v5p/v6e — noted in output) | No |
 | `get_smart_suggestions` | xprof's automated bottleneck triage | No |
 | `detect_unfused_reshapes` | Automated audit: standalone reshape/copy/transpose ops forcing HBM intermediates | No |
 | `list_hlo_modules` | List compiled HLO programs in a run | No |

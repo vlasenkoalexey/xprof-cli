@@ -132,6 +132,15 @@ def test_detect_unfused_reshapes_schema(local_mode):
     assert isinstance(out["inefficient_ops"], list)
 
 
+def test_perf_counters_empty_tolerant(local_mode):
+    """v6e fixture has no counter samples; tool must say so, not error."""
+    out = json.loads(analysis_tools.get_perf_counters(FIXTURE_RUN))
+    assert "error" not in out
+    assert "tables" in out
+    if not any(out["tables"]):
+        assert "silently unavailable" in out["note"]
+
+
 def test_smart_suggestions_schema(local_mode):
     out = json.loads(analysis_tools.get_smart_suggestions(FIXTURE_RUN))
     assert "error" not in out
