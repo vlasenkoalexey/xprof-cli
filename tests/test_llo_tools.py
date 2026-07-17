@@ -218,3 +218,169 @@ def test_get_custom_call_mlir_from_hlo_backend_config():
 def test_get_custom_call_mlir_no_dirs():
     r = mosaic_tools.get_custom_call_mlir()
     assert "No dump directory available" in r
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — fit summary (composition layer)
+# ---------------------------------------------------------------------------
+
+def _fit_parts(**kwargs):
+    out = llo_dump_tools.get_llo_fit_summary(JF_DUMP, **kwargs)
+    digest, js = out.split("\n\n```json\n")
+    return digest, json.loads(js.rstrip("`\n"))
+
+
+def test_fit_summary_sections_and_line_budget():
+    digest, data = _fit_parts()
+    lines = digest.splitlines()
+    assert len(lines) <= 30
+    for marker in ("# LLO fit summary", "VMEM:", "MXU:", "Unit split",
+                   "Spills:", "Timeline:", "Recommendations",
+                   "Verdict:", "Caveat:"):
+        assert any(l.startswith(marker) or marker in l for l in lines), marker
+    assert data["program"] == "matmul_optimized.1"
+
+
+def test_fit_summary_vmem_vs_limit():
+    _, data = _fit_parts()
+    vmem = data["vmem"]
+    # goldens: 3 MiB (3-buf X) + 2 MiB (1-buf Y) + 4 MiB (2-buf out)
+    # + 72 KiB scratch, all scoped
+    assert vmem["vmem_total_bytes"] == 9510912
+    assert vmem["vmem_scoped_bytes"] == 9510912
+    assert len(vmem["allocations"]) == 4
+    assert vmem["used_of_scoped_default_pct"] == 28.3
+    assert vmem["headroom_vs_scoped_default_pct"] == 71.7
+    assert vmem["used_of_hardware_pct"] == 7.1
+    assert "--xla_tpu_scoped_vmem_limit_kib" in vmem["limit_note"]
+
+
+def test_fit_summary_mxu_width():
+    _, data = _fit_parts()
+    mxu = data["mxu"]
+    assert mxu["matmul_count"] == 1024
+    assert mxu["inferred_operand_lanes"] == 256  # matpush1 + matpush2
+    assert mxu["mxus_used"] == ["mxu0", "mxu1"]
+    assert "f32" in mxu["dtypes"]
+
+
+def test_fit_summary_matches_underlying_tools():
+    _, data = _fit_parts()
+    util = json.loads(llo_dump_tools.get_llo_static_utilization(
+        JF_DUMP, "matmul_optimized.1"))
+    assert (data["units"]["MXU"]["occupancy_pct"]
+            == util["units"]["MXU"]["occupancy_pct"])
+    sched = json.loads(llo_dump_tools.get_llo_schedule_analysis(
+        JF_DUMP, "matmul_optimized.1"))
+    assert data["totals"]["total_bundles"] == sched["totals"]["total_bundles"]
+
+
+def test_fit_summary_spills_and_timeline():
+    _, data = _fit_parts()
+    spills = data["spills"]
+    assert spills["spills_total"] == 0 and spills["fills_total"] == 0
+    assert spills["spill_fill_per_bundle"] == 0.0
+    assert "flag" not in spills  # below the 0.5/bundle threshold
+    tl = data["timeline"]
+    assert abs(sum(tl["bundle_class_pct"].values()) - 100.0) < 0.5
+    runs = tl["top_stall_runs"]
+    assert runs and runs[0]["length"] >= runs[-1]["length"]
+    assert runs[0]["bundle_range"][0].startswith("0x")
+    assert runs[0]["hlo"] == "matmul_optimized.1"
+    assert runs[0]["dominant_class"] in (
+        "mem_stall_mxu_idle", "vpu_only_mxu_idle", "salu_bubble", "idle")
+
+
+def test_fit_summary_recommendations_and_verdict_class():
+    _, data = _fit_parts()
+    recs = data["recommendations"]
+    assert recs, "fixture kernel has 12.5% mem-stall -> expect a lever"
+    for r in recs:
+        assert r["kind"] in ("STRUCTURAL", "TUNE")
+        assert r["lever"] and r["ceiling_estimate"] and r["basis"]
+    vc = data["verdict_class"]
+    assert vc["class"] in ("STRUCTURAL", "TUNE", "AT-CEILING")
+    assert vc["top_lever"] == recs[0]["lever"]
+    assert vc["ceiling_estimate"] == recs[0]["ceiling_estimate"]
+    # static != measured caveat must ride along
+    assert "static" in data["caveat"]
+
+
+def test_fit_summary_wrong_dir_names_the_flags():
+    r = llo_dump_tools.get_llo_fit_summary("/nonexistent/path")
+    assert "--xla_jf_dump_to" in r
+    assert "--xla_jf_dump_llo_text" in r
+    assert "--xla_dump_to alone does NOT" in r
+
+
+def test_fit_summary_diff_self_is_neutral():
+    _, data = _fit_parts(diff_dump_dir=JF_DUMP)
+    deltas = data["diff"]["deltas"]
+    assert deltas and all(not v["changed"] for v in deltas.values())
+    for key in ("vmem_total_mib", "spills", "fills", "spill_fill_per_bundle",
+                "mxu_occupancy_pct", "mxu_idle_stall_pct", "total_bundles"):
+        assert key in deltas
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — device vs wall dual report
+# ---------------------------------------------------------------------------
+
+def _measure_file(tmp_path, payload, name="measure.json"):
+    p = tmp_path / name
+    p.write_text(json.dumps(payload))
+    return str(p)
+
+
+@trace
+def test_device_wall_report_floor_stamp(tmp_path):
+    """The 26k-incident shape: claimed wall 36.3us against a 0.599ms floor."""
+    from xprof_mcp.internal import kernel_profiling_tools as kpt
+    mj = _measure_file(tmp_path, {"wall_p50_ms": 0.0363,
+                                  "baseline": {"wall_p50_ms": 0.599}})
+    r = json.loads(kpt.get_device_wall_report(
+        RUN, kernel="matmul_optimized", measure_json=mj,
+        baseline_run=RUN, floor_ms=0.599))
+    audit = {a["claim"]: a for a in r["floor_audit"]}
+    wall = audit["wall p50"]
+    assert wall["verdict"] == "PHYSICALLY_IMPOSSIBLE"
+    assert "16.5x below" in wall["detail"]
+    # both ratios present and labeled
+    assert r["ratios"]["wall_ratio"] == 16.5
+    assert "deployable" in r["ratios"]["wall_ratio_label"]
+    assert "device-framing" in r["ratios"]["device_ratio_label"]
+    # device-busy (75.8us) exceeds the claimed wall -> device framing flagged
+    assert "device-busy EXCEEDS wall" in r["framing"]
+
+
+@trace
+def test_device_wall_report_framings_agree(tmp_path):
+    from xprof_mcp.internal import kernel_profiling_tools as kpt
+    # wall == device p50 (75.785us from the fixture trace)
+    mj = _measure_file(tmp_path, {"wall_p50_ms": 0.0765})
+    r = json.loads(kpt.get_device_wall_report(
+        RUN, kernel="matmul_optimized", measure_json=mj))
+    assert abs(r["gap_pct"]) < 5.0
+    assert "framings agree" in r["framing"]
+
+
+@trace
+def test_device_wall_report_dispatch_gap(tmp_path):
+    from xprof_mcp.internal import kernel_profiling_tools as kpt
+    # wall 10x device -> dispatch-dominated, quote wall
+    mj = _measure_file(tmp_path, {"results": [{"p50_us": 758.0}]})
+    r = json.loads(kpt.get_device_wall_report(
+        RUN, kernel="matmul_optimized", measure_json=mj))
+    assert r["wall_p50_ms"] == 0.758  # p50_us accepted + scaled
+    assert r["gap_pct"] > 85
+    assert "dispatch/host overhead" in r["framing"]
+    assert "floor_audit" not in r  # no floor given
+
+
+@trace
+def test_device_wall_report_no_wall_source():
+    from xprof_mcp.internal import kernel_profiling_tools as kpt
+    r = json.loads(kpt.get_device_wall_report(RUN, kernel="matmul_optimized"))
+    assert r["device_busy_p50_ms"] > 0
+    assert r["wall_p50_ms"] is None
+    assert "caveat" in r

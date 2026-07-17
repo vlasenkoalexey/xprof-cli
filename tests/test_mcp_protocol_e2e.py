@@ -57,7 +57,8 @@ async def test_kernel_profiling_and_llo_dumps_over_mcp(tmp_path):
             names = [t.name for t in (await session.list_tools()).tools]
             for tool in ("check_kernel_profiling", "get_llo_utilization",
                          "list_llo_programs", "get_llo_bundles",
-                         "get_custom_call_mlir"):
+                         "get_custom_call_mlir", "get_llo_fit_summary",
+                         "get_device_wall_report"):
                 assert tool in names
 
             r = await _call(session, "check_kernel_profiling", {"run": RUN})
@@ -78,6 +79,12 @@ async def test_kernel_profiling_and_llo_dumps_over_mcp(tmp_path):
                              "address_range": "-".join(hot["address_range"]),
                              "limit": 2})
             assert r["total_matched"] == hot["length"]
+
+            # fit summary returns markdown + fenced JSON (not pure JSON)
+            res = await session.call_tool("get_llo_fit_summary", {})
+            text = res.content[0].text
+            assert text.startswith("# LLO fit summary")
+            assert "Verdict:" in text and "```json" in text
 
             r = await _call(session, "get_custom_call_mlir",
                             {"mosaic_dump_dir": os.path.join(FIXTURES, "mosaic_dump"),

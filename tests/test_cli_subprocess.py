@@ -89,3 +89,23 @@ def test_unknown_run_exits_nonzero(cli_env):
     # Error body is machine-readable JSON (stdout for tool-level errors).
     parsed = json.loads(proc.stdout or proc.stderr)
     assert "error" in parsed
+
+
+def test_llo_fit_summary_cli_matches_direct_call(cli_env):
+    """CLI frontend parity: subprocess output == direct registry call."""
+    from tests.conftest import FIXTURES
+    from xprof_mcp.internal import llo_dump_tools
+
+    jf_dump = os.path.join(FIXTURES, "jf_dump")
+    proc = _run_cli(
+        cli_env,
+        "get_llo_fit_summary",
+        f"--dump_dir={jf_dump}",
+        "--bypass_cache=True",
+    )
+    assert proc.returncode == 0, proc.stderr[-800:]
+    direct = llo_dump_tools.get_llo_fit_summary(jf_dump)
+    assert proc.stdout.rstrip("\n") == direct.rstrip("\n")
+    # digest stays within the context budget on the CLI too
+    digest = proc.stdout.split("\n\n```json")[0]
+    assert len(digest.splitlines()) <= 30
