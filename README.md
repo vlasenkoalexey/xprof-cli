@@ -309,6 +309,8 @@ registry (`tool_registry.py`), two frontends.
 | `get_llo_schedule_analysis` | Bundle counts per HLO op / opcode (static attribution) | No |
 | `get_llo_static_utilization` | Per-bundle slot occupancy vs capacity + hot ranges | No |
 | `get_llo_bundles` | Windowed VLIW bundle listing (by address range / grep) | No |
+| `get_llo_fit_summary` | ~30-line kernel fit digest: VMEM vs limit, MXU width, spills, timeline classes, ranked levers + verdict class (`--diff_dump_dir` for deltas) | No |
+| `get_device_wall_report` | Device-busy vs wall-clock dual report with labeled ratios + physical-floor audit | Yes |
 | `get_custom_call_mlir` | Lowered Mosaic MLIR for a Pallas kernel (noop audit) | No |
 
 "Needs TF?" = requires `tensorflow-cpu` and `XPROF_LOGDIR` to be set.
@@ -335,7 +337,13 @@ Note: the LLO dumper uses its own `--xla_jf_dump_to` flag — XLA's
 `check_kernel_profiling` → `list_kernel_invocations` → `get_llo_utilization`
 / `get_kernel_stage_breakdown` → (drilldown) `list_llo_programs` →
 `get_llo_static_utilization` → `get_llo_bundles`, with `get_custom_call_mlir`
-as the structural did-it-lower-as-planned audit. The `Tensor Core` trace
+as the structural did-it-lower-as-planned audit. `get_llo_fit_summary`
+composes the dump-side tools into one ~30-line digest (VMEM allocation vs
+limit, MXU matmul width, spill/fill rate, bundle-timeline classification,
+ranked levers with ceiling estimates); `get_device_wall_report` keeps the
+device-time and wall-time framings side by side (kernel "wins" measured
+device-side routinely evaporate 1.6-27x at wall clock when dispatch
+dominates). The `Tensor Core` trace
 markers carry bundle addresses that plug directly into `get_llo_bundles`'
 `address_range`. Trace `% util` values are LLO static slot occupancy over
 measured time windows; raw runtime counter sampling requires TPU v7+.

@@ -491,3 +491,200 @@ def get_kernel_stage_breakdown(run: str, host: str = "", kernel: str = "") -> st
     except Exception as e:  # pylint: disable=broad-exception-caught
         logging.exception("get_kernel_stage_breakdown failed for run %s", run)
         return f"Error in get_kernel_stage_breakdown: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Device vs wall dual report
+# ---------------------------------------------------------------------------
+
+_WALL_KEY_RE = re.compile(r"(^|_)(wall_)?p50(_ms|_us|_ns)?$|^wall_ms$|^wall_us$")
+
+_WALL_RATIO_LABEL = (
+    "wall_ratio (deployable — what a caller of the op actually gets)")
+_DEVICE_RATIO_LABEL = (
+    "device_ratio (device-framing — overstates the win when dispatch/host "
+    "overhead dominates the wall time)")
+
+
+def _extract_wall_ms(obj, path: str = "") -> list[tuple[str, float]]:
+    """Finds wall-p50-like numeric leaves in a measurement JSON.
+
+    Accepts the common shapes: {"wall_p50_ms": x}, {"p50_ms": x},
+    {"p50_us": x}, {"wall": {"p50_ms": x}}, lists of runs, etc. Returns
+    [(json_path, value_ms), ...] in document order.
+    """
+    found: list[tuple[str, float]] = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            p = f"{path}.{k}" if path else str(k)
+            if isinstance(v, (int, float)) and _WALL_KEY_RE.search(str(k)):
+                scale = (1e-3 if str(k).endswith("_us")
+                         else 1e-6 if str(k).endswith("_ns") else 1.0)
+                found.append((p, float(v) * scale))
+            else:
+                found.extend(_extract_wall_ms(v, p))
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            found.extend(_extract_wall_ms(v, f"{path}[{i}]"))
+    return found
+
+
+def _floor_check(claim_ms: Optional[float], floor_ms: float,
+                 what: str) -> Optional[dict]:
+    if claim_ms is None or not floor_ms or claim_ms >= floor_ms:
+        return None
+    return {
+        "claim": what,
+        "claim_ms": claim_ms,
+        "floor_ms": floor_ms,
+        "verdict": "PHYSICALLY_IMPOSSIBLE",
+        "detail": (f"{what} of {claim_ms:.6g} ms is "
+                   f"{floor_ms / claim_ms:.1f}x below the stated physical "
+                   f"floor of {floor_ms:.6g} ms — the measurement or the "
+                   f"framing is wrong, not the hardware"),
+    }
+
+
+def _device_p50_ms(run: str, host: str, kernel: str) -> Optional[float]:
+    """p50 device-busy per invocation (ms) for the matching kernel spans."""
+    xspace = xplane_tools._fetch_xspace(run, host)  # pylint: disable=protected-access
+    durations: list[int] = []
+    for plane in _device_planes(xspace):
+        for spans in _kernel_invocation_spans(plane, kernel or ".*").values():
+            durations.extend(e - s for s, e in spans)
+    if not durations:
+        return None
+    return statistics.median(durations) / 1e9  # ps -> ms
+
+
+def get_device_wall_report(
+    run: str,
+    host: str = "",
+    kernel: str = "",
+    measure_json: str = "",
+    baseline_run: str = "",
+    floor_ms: float = 0.0,
+) -> str:
+    """Device-busy vs wall-clock dual report — keeps both framings labeled.
+
+    Device time (from the trace) and wall time (from the caller's own
+    measurement) routinely diverge by 1.6-27x on dispatch-bound kernels;
+    reporting only one framing is the classic way a kernel "win" evaporates
+    in deployment. This tool reports both, labels both ratios, and (with
+    `floor_ms`) stamps sub-physical claims PHYSICALLY_IMPOSSIBLE.
+
+    Args:
+        run:          Run name whose trace provides device-busy time.
+        host:         Host name. Defaults to the first host found.
+        kernel:       Kernel/op regex (see list_kernel_invocations) to
+                      restrict device spans; default all instrumented ops.
+        measure_json: Path to a wall-clock measurement JSON (e.g. a
+                      benchmark-harness/kernelgate result). The first
+                      wall/p50-like key found is the candidate wall p50;
+                      a `baseline` subtree provides the baseline wall p50.
+                      Accepted key shapes: wall_p50_ms / p50_ms / p50_us /
+                      {"wall": {"p50_ms": ...}}.
+        baseline_run: Optional second run for the baseline device-busy p50.
+        floor_ms:     Optional physical floor (e.g. HBM roofline time). Any
+                      claim below it is stamped PHYSICALLY_IMPOSSIBLE with
+                      the multiple below floor.
+
+    Returns:
+        JSON: device/wall p50s, gap_pct, labeled wall_ratio + device_ratio
+        (when a baseline exists), floor audit, and framing caveats.
+    """
+    try:
+        result: dict = {"run": run, "kernel": kernel or "(all instrumented)"}
+
+        device_ms = _device_p50_ms(run, host, kernel)
+        result["device_busy_p50_ms"] = device_ms
+        if device_ms is None:
+            result["device_note"] = (
+                "no instrumented kernel spans found in trace; "
+                + _CAPTURE_HINT)
+
+        wall_ms = None
+        baseline_wall_ms = None
+        if measure_json:
+            with open(measure_json, encoding="utf-8") as f:
+                doc = json.load(f)
+            baseline_doc = doc.pop("baseline", None) if isinstance(
+                doc, dict) else None
+            walls = _extract_wall_ms(doc)
+            if walls:
+                result["wall_source"] = {"file": measure_json,
+                                         "key": walls[0][0]}
+                wall_ms = walls[0][1]
+            else:
+                result["wall_note"] = (
+                    f"no wall/p50-like key found in {measure_json!r} "
+                    "(accepted: wall_p50_ms, p50_ms, p50_us, wall.p50_ms)")
+            if baseline_doc is not None:
+                bwalls = _extract_wall_ms(baseline_doc)
+                if bwalls:
+                    baseline_wall_ms = bwalls[0][1]
+        result["wall_p50_ms"] = wall_ms
+
+        if wall_ms is not None and device_ms is not None:
+            gap_pct = round(100.0 * (wall_ms - device_ms) / wall_ms, 1)
+            result["gap_pct"] = gap_pct
+            if device_ms > wall_ms:
+                result["framing"] = (
+                    "device-busy EXCEEDS wall — overlapping invocations or "
+                    "mismatched aggregation windows; the device framing is "
+                    "unreliable here, trust wall")
+            elif abs(gap_pct) < 5.0:
+                result["framing"] = (
+                    "framings agree (gap < 5%) — dispatch overhead is "
+                    "negligible; either number is honest")
+            else:
+                result["framing"] = (
+                    f"wall is {wall_ms / device_ms:.2f}x device-busy — "
+                    "dispatch/host overhead owns the difference; quote the "
+                    "wall number for deployable claims")
+
+        baseline_device_ms = None
+        if baseline_run:
+            baseline_device_ms = _device_p50_ms(baseline_run, host, kernel)
+            result["baseline_run"] = baseline_run
+            result["baseline_device_busy_p50_ms"] = baseline_device_ms
+        if baseline_wall_ms is not None:
+            result["baseline_wall_p50_ms"] = baseline_wall_ms
+
+        ratios: dict = {}
+        if wall_ms and baseline_wall_ms:
+            ratios["wall_ratio"] = round(baseline_wall_ms / wall_ms, 2)
+            ratios["wall_ratio_label"] = _WALL_RATIO_LABEL
+        if device_ms and baseline_device_ms:
+            ratios["device_ratio"] = round(
+                baseline_device_ms / device_ms, 2)
+            ratios["device_ratio_label"] = _DEVICE_RATIO_LABEL
+        if ratios:
+            result["ratios"] = ratios
+            if "wall_ratio" in ratios and "device_ratio" in ratios and (
+                    ratios["device_ratio"] > 1.5 * ratios["wall_ratio"]):
+                result["ratio_warning"] = (
+                    "device_ratio overstates wall_ratio by >1.5x — the "
+                    "device framing is inflating this win (dispatch-bound "
+                    "regime); report wall_ratio")
+
+        floor_audit = [a for a in (
+            _floor_check(wall_ms, floor_ms, "wall p50"),
+            _floor_check(device_ms, floor_ms, "device-busy p50"),
+        ) if a]
+        if floor_ms:
+            result["floor_ms"] = floor_ms
+            result["floor_audit"] = floor_audit or [
+                {"verdict": "OK", "detail": "no claim below the floor"}]
+
+        result["caveat"] = (
+            "device-busy comes from instrumented custom-call spans in the "
+            "trace (LLO kernel-profiling flags); wall comes from the "
+            "caller's measurement file. Neither alone is 'the' time: wall "
+            "is what deploys, device is what the kernel costs on-chip.")
+        return json.dumps(result, indent=2)
+    except ImportError:
+        return xplane_tools._XPLANE_IMPORT_ERROR  # pylint: disable=protected-access
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logging.exception("get_device_wall_report failed for run %s", run)
+        return f"Error in get_device_wall_report: {e}"

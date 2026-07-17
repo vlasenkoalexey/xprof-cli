@@ -131,6 +131,8 @@ Dump-side (no server / no TF needed; `dump_dir` arg or `XLA_JF_DUMP_DIR`):
 | `get_llo_schedule_analysis(dump_dir, program)` | Total/empty bundles; per-HLO and per-opcode attribution |
 | `get_llo_static_utilization(dump_dir, program)` | Occupancy vs capacity per unit; saturated %; dominant-unit hot ranges |
 | `get_llo_bundles(dump_dir, program, address_range?, grep?, limit?)` | Windowed VLIW listing (hard-capped; always narrow) |
+| `get_llo_fit_summary(dump_dir, program?, top_stalls?, diff_dump_dir?)` | ~30-line composed digest: VMEM vs limit + headroom, MXU width (128/256 lanes), spill/fill rate, timeline classes + stall runs, ranked levers, machine-readable verdict class |
+| `get_device_wall_report(run, kernel?, measure_json?, baseline_run?, floor_ms?)` | Device-busy vs wall p50 dual report; labeled `wall_ratio` (deployable) / `device_ratio` (device-framing); `floor_ms` stamps sub-physical claims PHYSICALLY_IMPOSSIBLE |
 | `get_custom_call_mlir(kernel?, mosaic_dump_dir?, hlo_dump_dir?)` | Lowered Mosaic MLIR: full text from `--xla_mosaic_dump_to`, or a bytecode structural summary (op counts + named scopes) decoded from the HLO dump's `custom_call_config.body` |
 
 ---

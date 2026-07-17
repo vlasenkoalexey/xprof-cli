@@ -70,10 +70,12 @@ ALL_TOOLS: "OrderedDict[str, Callable]" = OrderedDict(
         kernel_profiling_tools.list_kernel_invocations,
         kernel_profiling_tools.get_llo_utilization,
         kernel_profiling_tools.get_kernel_stage_breakdown,
+        kernel_profiling_tools.get_device_wall_report,
         llo_dump_tools.list_llo_programs,
         llo_dump_tools.get_llo_schedule_analysis,
         llo_dump_tools.get_llo_static_utilization,
         llo_dump_tools.get_llo_bundles,
+        llo_dump_tools.get_llo_fit_summary,
         mosaic_tools.get_custom_call_mlir,
     ]
 )
