@@ -80,6 +80,10 @@ def capture(fixtures_dir: str) -> None:
     print(f"Captured under {logdir}/plugins/profile/<session>/")
     print("Rename the session dir to 'testrun' and keep one host's"
           " .xplane.pb; prune jf_dump/mosaic_dump to a few files.")
+    print("jf_dump checkpoints the tests need: final_bundles,"
+          " *per-bundle-utilization, schedule-analysis_final_bundles, and"
+          " one allocation-bearing IR pass (e.g. `original` or `post-ra`)"
+          " for get_llo_fit_summary's VMEM section.")
 
 
 if __name__ == "__main__":
