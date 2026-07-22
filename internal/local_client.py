@@ -41,6 +41,7 @@ _GRAPH_VIEWER_OPTION_KEYS = (
     "type",
 )
 
+import sys
 
 def converters_available() -> bool:
     """True if the xprof pip converters are importable."""
@@ -48,7 +49,8 @@ def converters_available() -> bool:
         from xprof.convert import raw_to_tool_data  # noqa: F401 pylint: disable=g-import-not-at-top,unused-import
 
         return True
-    except ImportError:
+    except Exception as e:  # noqa: BLE001 — any import-time failure means converters are unusable
+        print("converters_available: import failed:", e, file=sys.stderr)
         return False
 
 
