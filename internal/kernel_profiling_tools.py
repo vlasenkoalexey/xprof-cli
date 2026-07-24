@@ -323,7 +323,7 @@ def get_llo_utilization(
     """
     try:
         xspace = xplane_tools._fetch_xspace(run, host)  # pylint: disable=protected-access
-        timeline_buckets = min(timeline_buckets, 50)
+        timeline_buckets = min(int(timeline_buckets), 50)
         result: dict = {}
         for plane in _device_planes(xspace):
             cline = _find_line(plane, _COUNTERS_LINE)
@@ -594,6 +594,7 @@ def get_device_wall_report(
         (when a baseline exists), floor audit, and framing caveats.
     """
     try:
+        floor_ms = float(floor_ms)
         result: dict = {"run": run, "kernel": kernel or "(all instrumented)"}
 
         device_ms = _device_p50_ms(run, host, kernel)

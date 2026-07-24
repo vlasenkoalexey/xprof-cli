@@ -69,6 +69,8 @@ def _make_command(name: str, fn):
         _run_index = None
 
     def command(*args, logdir: str = "", bypass_cache: bool = False, **kwargs):
+        args = tuple(str(a) if isinstance(a, (int, float)) else a for a in args)
+        kwargs = {k: str(v) if isinstance(v, (int, float)) else v for k, v in kwargs.items()}
         if logdir:
             os.environ["XPROF_LOGDIR"] = logdir
         try:

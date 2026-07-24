@@ -61,6 +61,7 @@ def _require_xplane_proto() -> None:
 
 def _fetch_xspace(run: str, host: str = "") -> "xplane_pb2.XSpace":
     """Reads and parses an XSpace proto from disk."""
+    run = str(run)
     _require_xplane_proto()
     client = xprof_client.get_client()
 

@@ -266,17 +266,27 @@ class OSSXprofClient:
     def get_session_dir(self, run: str) -> str:
         """Returns the on-disk session directory for a run."""
         logdir = self._require_logdir()
+        run = str(run)
         standard = os.path.join(logdir, "plugins", "profile", run)
-        if _gfile_exists(standard) or "/" not in run:
+        if _gfile_exists(standard):
             return standard
 
-        # When xprof is pointed at a directory tree, its run endpoint reports
-        # nested captures as `<trace-root>/<session>`, while the files remain
-        # under `<trace-root>/plugins/profile/<session>`.  Mirror that mapping
-        # for direct XPlane/HLO-proto reads.
-        trace_root, session = run.rsplit("/", 1)
-        nested = os.path.join(logdir, trace_root, "plugins", "profile", session)
-        return nested if _gfile_exists(nested) else standard
+        profile_dir = os.path.join(logdir, "plugins", "profile")
+        if _gfile_exists(profile_dir):
+            try:
+                for d in _gfile_listdir(profile_dir):
+                    if d.replace("_", "") == run.replace("_", ""):
+                        return os.path.join(profile_dir, d)
+            except Exception:
+                pass
+
+        if "/" in run:
+            trace_root, session = run.rsplit("/", 1)
+            nested = os.path.join(logdir, trace_root, "plugins", "profile", session)
+            if _gfile_exists(nested):
+                return nested
+
+        return standard
 
     def get_xplane_file_path(self, run: str, host: str) -> str:
         """Returns path to <host>.xplane.pb for the given run."""
