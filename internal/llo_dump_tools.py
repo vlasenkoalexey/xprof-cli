@@ -499,10 +499,20 @@ _ALLOC_RE = re.compile(
 
 # MXU mnemonics in the final bundle listing, e.g.
 # `vmatmul.mubr.f32.vlgmr.msra.gmra.mxu0`, `vmatpush1.bf16.msra.mxu1`.
+# The push index is `\d+`, NOT `[12]`: hardware emits matpush3 (and may emit
+# further indices). Anchoring to [12] made those mnemonics unmatchable, so they
+# never reached `push_kinds` and a full-width kernel was mis-inferred as
+# half-width -> a phantom "<=2.0x" STRUCTURAL lever. See _scan_mxu_mnemonics.
 _MXU_MNEMONIC_RE = re.compile(
-    r"\bv?(?P<op>matmul|matpush(?P<push>[12])|matprep|matpop|matres)"
+    r"\bv?(?P<op>matmul|matpush(?P<push>\d+)|matprep|matpop|matres)"
     r"(?P<mods>(?:\.[a-z0-9]+)*)\b"
 )
+# Any MXU-looking *mnemonic*, used only to detect ops the classifier above does
+# NOT model. Absence of evidence must never become positive evidence.
+# The leading `v` is required: bundle listings always spell these `vmat...`,
+# and without it this pattern matches English prose in the dump (e.g. the word
+# "materialized"), which would suppress every lane verdict.
+_MXU_ANY_RE = re.compile(r"\bvmat[a-z]+\d*\b")
 _MXU_DTYPES = {"bf16", "f32", "f16", "s8", "u8", "s16", "s32", "f8e4m3",
                "f8e5m2", "x8", "hf8", "qf8"}
 
@@ -579,11 +589,14 @@ def _scan_mxu_mnemonics(path: str) -> dict:
     dtypes: dict[str, int] = collections.defaultdict(int)
     push_kinds: set[str] = set()
     mxus: set[str] = set()
+    unmodeled: dict[str, int] = collections.defaultdict(int)
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             if "mat" not in line:
                 continue
+            matched_spans = []
             for m in _MXU_MNEMONIC_RE.finditer(line):
+                matched_spans.append(m.span())
                 op = m.group("op")
                 ops[op] += 1
                 if m.group("push"):
@@ -594,24 +607,44 @@ def _scan_mxu_mnemonics(path: str) -> dict:
                         dtypes[dt] += 1
                 for unit in mods & {"mxu0", "mxu1", "mxu2", "mxu3"}:
                     mxus.add(unit)
+            # Any MXU-looking token the classifier did not consume is recorded
+            # rather than silently dropped: an unmodeled mnemonic is exactly
+            # what corrupted the lane inference before.
+            for m in _MXU_ANY_RE.finditer(line):
+                s, e = m.span()
+                if any(s >= ms and e <= me for ms, me in matched_spans):
+                    continue
+                unmodeled[m.group(0)] += 1
     matmuls = sum(v for k, v in ops.items() if k.startswith("matmul"))
+    # Lane inference is THREE-valued. Only positive evidence yields a verdict;
+    # anything else is `None` (unknown). Never infer half-width from the mere
+    # absence of a push index, and never when an unmodeled mnemonic was seen.
     width = None
-    if ops:
-        # Heuristic (v5p/v6e): operands are staged with vmatpush1/vmatpush2
-        # (two 128-lane halves) when the matmul consumes the full 256-lane
-        # tile; a 128-lane (half-width) matmul only ever issues matpush1.
-        width = 256 if {"1", "2"} <= push_kinds else 128
+    basis = ""
+    if ops and not unmodeled:
+        higher = {p for p in push_kinds if p != "1"}
+        if higher:
+            # Two or more distinct push slots => the matmul stages a full tile.
+            width = 256
+            basis = ("matpush1+matpush%s present -> full 256-lane tile staging"
+                     % sorted(higher)[0])
+        elif push_kinds == {"1"}:
+            width = 128
+            basis = "only matpush1 present -> 128-lane (half-width) staging"
+        else:
+            basis = ("no matpush mnemonic observed -> operand lane width "
+                     "indeterminate")
+    elif unmodeled:
+        basis = ("unmodeled MXU mnemonic(s) %s -> operand lane width "
+                 "indeterminate" % ", ".join(sorted(unmodeled)))
     return {
         "matmul_count": matmuls,
         "op_counts": dict(sorted(ops.items())),
         "dtypes": dict(sorted(dtypes.items())),
         "mxus_used": sorted(mxus),
+        "unmodeled_mnemonics": dict(sorted(unmodeled.items())),
         "inferred_operand_lanes": width,
-        "lane_inference": (
-            "" if width is None else
-            ("matpush1+matpush2 both present -> full 256-lane tile staging"
-             if width == 256 else
-             "only matpush1 present -> 128-lane (half-width) staging")),
+        "lane_inference": basis,
     }
 
 
@@ -854,7 +887,14 @@ def _recommendations(vmem: dict, mxu: dict, spill: dict, tl: dict) -> list[dict]
             "basis": f"{idle}% fully-idle bundles",
         })
 
-    if mxu.get("matmul_count") and mxu.get("inferred_operand_lanes") == 128:
+    # Gate on POSITIVE evidence only: `inferred_operand_lanes == 128` is now
+    # emitted solely from the `push_kinds == {"1"}` branch, and is None (not
+    # 128) whenever the width is indeterminate or an unmodeled mnemonic was
+    # seen. Without this gate the tool proposed a "<=2.0x" lever on kernels
+    # that were already full-width.
+    if (mxu.get("matmul_count")
+            and mxu.get("inferred_operand_lanes") == 128
+            and not mxu.get("unmodeled_mnemonics")):
         recs.append({
             "kind": "STRUCTURAL",
             "lever": "feed full 256-lane MXU tiles (operand staging is "
