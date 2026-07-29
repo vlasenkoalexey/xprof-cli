@@ -68,9 +68,44 @@ def _make_command(name: str, fn):
     except (ValueError, TypeError):
         _run_index = None
 
+    # Fire turns `--top_stalls 5` into the int 5, and a run named "12345" into
+    # the int 12345 too. The latter must become a string again; the former must
+    # NOT — blanket-stringifying every number passed "5" to an `int` parameter
+    # and blew up on `runs[:top_stalls]`. Coerce per the tool's own annotation.
+    try:
+        _annots = {
+            name: p.annotation
+            for name, p in inspect.signature(fn).parameters.items()
+        }
+    except (ValueError, TypeError):
+        _annots = {}
+
+    def _numeric_param(name: str) -> bool:
+        """True when the tool declares this parameter as int/float."""
+        a = _annots.get(name, inspect.Parameter.empty)
+        if a is inspect.Parameter.empty:
+            return False
+        if a in (int, float):
+            return True
+        # tolerate string annotations and unions like `int | None`
+        return isinstance(a, str) and a.split("|")[0].strip() in ("int", "float")
+
+    def _coerce(name: str, v):
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            return v
+        if not _numeric_param(name):
+            return str(v)
+        a = _annots.get(name)
+        want_float = a is float or (isinstance(a, str)
+                                    and a.split("|")[0].strip() == "float")
+        return float(v) if want_float else int(v)
+
     def command(*args, logdir: str = "", bypass_cache: bool = False, **kwargs):
-        args = tuple(str(a) if isinstance(a, (int, float)) else a for a in args)
-        kwargs = {k: str(v) if isinstance(v, (int, float)) else v for k, v in kwargs.items()}
+        args = tuple(
+            _coerce(_param_names[i] if i < len(_param_names) else "", a)
+            for i, a in enumerate(args)
+        )
+        kwargs = {k: _coerce(k, v) for k, v in kwargs.items()}
         if logdir:
             os.environ["XPROF_LOGDIR"] = logdir
         try:

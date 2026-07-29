@@ -92,6 +92,24 @@ def _event_stats(event, stat_names: dict[int, str]) -> dict:
     }
 
 
+def _weighted_median(pairs: list[tuple[int, float]]) -> float:
+    """Median of `value` weighted by `weight` — the value at which half the
+    total weight lies below. Plain statistics.median treats a 78-ps sample and
+    a 4-us sample as equals; this does not."""
+    if not pairs:
+        raise ValueError("no samples")
+    ordered = sorted(pairs, key=lambda p: p[1])
+    total = sum(w for w, _ in ordered)
+    if total <= 0:
+        return statistics.median([v for _, v in ordered])
+    seen = 0.0
+    for w, v in ordered:
+        seen += w
+        if seen >= total / 2.0:
+            return v
+    return ordered[-1][1]
+
+
 def _abs_span_ps(line, event) -> tuple[int, int]:
     """Absolute (start_ps, end_ps) for an event (line timestamps are ns)."""
     start = line.timestamp_ns * 1000 + event.offset_ps
@@ -351,30 +369,78 @@ def get_llo_utilization(
                 unit = names.get(event.metadata_id, "?")
                 stats = _event_stats(event, stat_names)
                 if "% util" in stats:
-                    samples[unit].append((span[0], float(stats["% util"])))
+                    samples[unit].append(
+                        (span[0], max(0, span[1] - span[0]), float(stats["% util"])))
                 else:
                     for key in ("fills", "spills"):
                         if key in stats:
                             counts[unit] += float(stats[key])
 
+            # Sampling intervals in a real trace span ~9 orders of magnitude
+            # (78 ps to 4.19 us measured on a v6e Pallas capture), so an
+            # UNWEIGHTED mean lets a 78-ps blip at 79% outvote a 4-us stretch
+            # at 0%. Measured error on that capture: MXU 39.24% unweighted vs
+            # 0.2647% duration-weighted, a 148x overstatement of the headline
+            # number pasted into experiment pages. Weight every statistic by
+            # how long the sample actually covered.
+            #
+            # Guard first: some exporters write an absolute end timestamp into
+            # duration_ps, yielding samples longer than the whole trace (three
+            # _counters_ events at ~81.9 ms in a 605 us capture). Those would
+            # dominate any duration weighting outright.
+            # Derive the reference span from sample START times only. Using
+            # start+duration would let a malformed sample define the very span
+            # it is checked against, so the guard could never fire on the case
+            # it exists for.
+            _starts = [s for vals in samples.values() for s, _, _ in vals]
+            trace_span = max(1, (max(_starts) - min(_starts)) if _starts else 1)
+
             units: dict[str, dict] = {}
             for unit, vals in sorted(samples.items()):
-                utils = [v for _, v in vals]
+                # A single sample may not exceed the whole observed span.
+                good = [(s, d, v) for s, d, v in vals if 0 < d <= trace_span]
+                malformed = len(vals) - len(good)
+                utils = [v for _, _, v in vals]
                 entry = {
                     "samples": len(utils),
-                    "mean_util_pct": round(statistics.mean(utils), 2),
-                    "p50_util_pct": round(statistics.median(utils), 2),
                     "max_util_pct": round(max(utils), 2),
+                    "mean_util_pct_unweighted": round(statistics.mean(utils), 2),
+                    "p50_util_pct_unweighted": round(statistics.median(utils), 2),
                 }
+                if good:
+                    tot = sum(d for _, d, _ in good)
+                    entry["mean_util_pct"] = round(
+                        sum(d * v for _, d, v in good) / tot, 2)
+                    entry["p50_util_pct"] = round(
+                        _weighted_median([(d, v) for _, d, v in good]), 2)
+                    entry["weighted_by"] = "sample duration_ps"
+                    entry["covered_ps"] = tot
+                else:
+                    # No usable durations — report the unweighted figure but
+                    # say so rather than passing it off as a weighted mean.
+                    entry["mean_util_pct"] = round(statistics.mean(utils), 2)
+                    entry["p50_util_pct"] = round(statistics.median(utils), 2)
+                    entry["weighted_by"] = ("none — no sample carried a usable "
+                                            "duration; values are unweighted")
+                if malformed:
+                    entry["malformed_duration_samples"] = malformed
+                    entry["malformed_note"] = (
+                        "%d sample(s) reported a duration longer than the whole "
+                        "observed span (%d ps) — an exporter writing an absolute "
+                        "end into duration_ps; excluded from the weighting"
+                        % (malformed, trace_span))
                 if timeline_buckets and len(vals) > 1:
                     vals.sort()
                     t0, t1 = vals[0][0], vals[-1][0]
                     width = max(1, (t1 - t0) // timeline_buckets + 1)
-                    buckets: dict[int, list[float]] = collections.defaultdict(list)
-                    for t, v in vals:
-                        buckets[(t - t0) // width].append(v)
+                    buckets: dict[int, list[tuple[int, float]]] = (
+                        collections.defaultdict(list))
+                    for t, d, v in (good or [(s, 1, v) for s, _, v in vals]):
+                        buckets[(t - t0) // width].append((d, v))
                     entry["timeline_mean_pct"] = [
-                        round(statistics.mean(buckets[i]), 1) if i in buckets else None
+                        round(sum(d * v for d, v in buckets[i])
+                              / max(1, sum(d for d, _ in buckets[i])), 1)
+                        if i in buckets else None
                         for i in range(timeline_buckets)
                     ]
                 units[unit] = entry
@@ -390,12 +456,27 @@ def get_llo_utilization(
             if util_units:
                 dominant = max(util_units, key=lambda u: util_units[u]["mean_util_pct"])
                 verdict["dominant_unit"] = dominant
-                mxu = util_units.get("MXU", {}).get("mean_util_pct", 0.0)
-                vload = util_units.get("Vector Load", {}).get("mean_util_pct", 0.0)
-                salu = util_units.get("Scalar ALU", {}).get("mean_util_pct", 0.0)
+                # A unit absent from util_units had NO samples in this window
+                # (wrong plane kind, renamed unit on another TPU generation, or
+                # simply no overlap). Defaulting it to 0.0 asserted "the MXU was
+                # idle" / "not memory bound" from no evidence at all, and both
+                # booleans were then derived from that fabricated zero.
+                mxu = util_units.get("MXU", {}).get("mean_util_pct")
+                vload = util_units.get("Vector Load", {}).get("mean_util_pct")
+                salu = util_units.get("Scalar ALU", {}).get("mean_util_pct")
+                missing = [n for n, v in (("MXU", mxu), ("Vector Load", vload),
+                                          ("Scalar ALU", salu)) if v is None]
                 verdict["mxu_mean_util_pct"] = mxu
-                verdict["memory_bound_signal"] = bool(vload > mxu)
-                verdict["scalar_bound_signal"] = bool(salu > mxu)
+                if missing:
+                    verdict["status"] = "indeterminate"
+                    verdict["missing_units"] = missing
+                    verdict["note"] = (
+                        "no samples for %s in this window — bound signals are "
+                        "not derivable and are omitted rather than defaulted "
+                        "to zero" % ", ".join(missing))
+                else:
+                    verdict["memory_bound_signal"] = bool(vload > mxu)
+                    verdict["scalar_bound_signal"] = bool(salu > mxu)
             result[plane.name] = {
                 "window": ("kernel spans" if kernel else
                            "explicit range" if windows else "whole trace"),
@@ -545,6 +626,23 @@ def _floor_check(claim_ms: Optional[float], floor_ms: float,
     }
 
 
+def _pop_nested(node, key: str) -> list:
+    """Remove every occurrence of `key` at any depth, returning what was
+    removed. Companion to _extract_wall_ms, which also recurses — a top-level
+    pop alone leaves nested baseline subtrees in the tree to be mistaken for
+    the candidate."""
+    found = []
+    if isinstance(node, dict):
+        if key in node:
+            found.append(node.pop(key))
+        for v in list(node.values()):
+            found.extend(_pop_nested(v, key))
+    elif isinstance(node, list):
+        for v in node:
+            found.extend(_pop_nested(v, key))
+    return found
+
+
 def _device_p50_ms(run: str, host: str, kernel: str) -> Optional[float]:
     """p50 device-busy per invocation (ms) for the matching kernel spans."""
     xspace = xplane_tools._fetch_xspace(run, host)  # pylint: disable=protected-access
@@ -609,13 +707,30 @@ def get_device_wall_report(
         if measure_json:
             with open(measure_json, encoding="utf-8") as f:
                 doc = json.load(f)
+            # `pop` only removes a TOP-LEVEL "baseline", but _extract_wall_ms
+            # recurses — so for a nested doc such as
+            #   {"results": {"baseline": {...}, "candidate": {...}}}
+            # the baseline's p50 stayed in the tree and, being first in
+            # document order, was reported as the CANDIDATE's wall time.
             baseline_doc = doc.pop("baseline", None) if isinstance(
                 doc, dict) else None
+            nested_baselines = _pop_nested(doc, "baseline")
+            if baseline_doc is None and nested_baselines:
+                baseline_doc = nested_baselines[0]
             walls = _extract_wall_ms(doc)
             if walls:
                 result["wall_source"] = {"file": measure_json,
                                          "key": walls[0][0]}
                 wall_ms = walls[0][1]
+                if len(walls) > 1:
+                    # Don't silently take [0] when the document offers several.
+                    result["wall_ambiguous"] = {
+                        "note": "multiple wall/p50-like keys matched; used the "
+                                "first in document order — confirm it is the "
+                                "candidate's",
+                        "candidates": [{"key": k, "value_ms": v}
+                                       for k, v in walls[:8]],
+                    }
             else:
                 result["wall_note"] = (
                     f"no wall/p50-like key found in {measure_json!r} "

@@ -88,9 +88,18 @@ def test_get_llo_utilization_kernel_window():
     d = r["/device:TPU:0"]
     assert d["window"] == "kernel spans"
     mxu = d["units"]["MXU"]
-    # golden: p50 ~72% during the kernel
-    assert 65 < mxu["p50_util_pct"] < 80
-    assert d["verdict"]["dominant_unit"] == "MXU"
+    # The golden ~72% is a SAMPLE-COUNT average and is preserved under its
+    # honest name. It is not a time fraction: in this window the MXU is at
+    # ~79% for 150 samples totalling 0.797us and at 0% for 144 samples
+    # totalling 220.7us, so counting samples equally reports ~39-72% for a
+    # unit that is busy 0.36% of the time.
+    assert 65 < mxu["p50_util_pct_unweighted"] < 80
+    # the headline is duration-weighted: fraction of TIME the unit was busy
+    assert mxu["mean_util_pct"] < 1.0
+    assert mxu["weighted_by"] == "sample duration_ps"
+    # dominant_unit is likewise now "busiest by time", not "highest sample
+    # average" — by time the Scalar ALU (19.3%) leads the MXU (0.26%) here.
+    assert d["verdict"]["dominant_unit"] == "Scalar ALU"
     assert d["units"]["Vector Fills"]["total_count"] == 0.0
     assert "static slot occupancy" in d["semantics"]
 
@@ -455,3 +464,60 @@ def test_half_width_lever_not_emitted_when_width_unknown(tmp_path):
     assert (half["matmul_count"]
             and half["inferred_operand_lanes"] == 128
             and not half["unmodeled_mnemonics"])
+
+
+@trace
+def test_utilization_is_duration_weighted_not_sample_counted():
+    """Sampling intervals span ~9 orders of magnitude, so a sample-count mean
+    lets a 78ps blip outvote a 4us stretch. The headline must be a time
+    fraction."""
+    from xprof_mcp.internal import kernel_profiling_tools as kpt
+    d = json.loads(kpt.get_llo_utilization(RUN))["/device:TPU:0"]
+    mxu = d["units"]["MXU"]
+    assert mxu["weighted_by"] == "sample duration_ps"
+    # busy 0.797us of a 220.7us span -> well under 1%, vs 39.24% sample-counted
+    assert mxu["mean_util_pct"] < 1.0
+    assert mxu["mean_util_pct_unweighted"] > 35.0
+    assert mxu["covered_ps"] > 0
+
+
+@trace
+def test_malformed_sample_durations_are_excluded_and_reported():
+    """Three _counters_ events carry a duration longer than the whole trace (an
+    exporter writing an absolute end into duration_ps). They must not be able
+    to dominate the weighting, and their exclusion must be visible."""
+    from xprof_mcp.internal import kernel_profiling_tools as kpt
+    d = json.loads(kpt.get_llo_utilization(RUN))["/device:TPU:0"]
+    salu = d["units"]["Scalar ALU"]
+    assert salu["malformed_duration_samples"] == 3
+    assert "longer than the whole observed span" in salu["malformed_note"]
+    # with them excluded the real signal is recovered (~19%, not ~0)
+    assert salu["mean_util_pct"] > 5.0
+
+
+@trace
+def test_bound_signals_are_omitted_when_a_unit_has_no_samples():
+    """Missing units must not be defaulted to 0.0 — that asserts 'MXU idle'
+    from no evidence."""
+    from xprof_mcp.internal import kernel_profiling_tools as kpt
+    d = json.loads(kpt.get_llo_utilization(RUN))["/device:TPU:0"]
+    v = d["verdict"]
+    if v.get("status") == "indeterminate":
+        assert "memory_bound_signal" not in v
+        assert v["missing_units"]
+    else:
+        assert v["mxu_mean_util_pct"] is not None
+
+
+@trace
+def test_device_wall_report_ignores_nested_baseline(tmp_path):
+    """`doc.pop("baseline")` is top-level only while _extract_wall_ms recurses,
+    so a nested baseline p50 was reported as the candidate's wall time."""
+    from xprof_mcp.internal import kernel_profiling_tools as kpt
+    p = tmp_path / "m.json"
+    p.write_text(json.dumps(
+        {"results": {"baseline": {"p50_ms": 5.0},
+                     "candidate": {"p50_ms": 1.0}}}))
+    r = json.loads(kpt.get_device_wall_report(RUN, measure_json=str(p)))
+    assert r["wall_p50_ms"] == 1.0
+    assert "baseline" not in r["wall_source"]["key"]

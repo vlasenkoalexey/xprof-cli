@@ -26,6 +26,14 @@ def _parse_datatable(data: bytes | str) -> list[dict[str, Any]]:
     if isinstance(data, bytes):
         data = data.decode("utf-8", errors="replace")
     parsed = json.loads(data)
+    # xprof returns some DataTables (notably hlo_stats) as a BARE dict rather
+    # than a single-element list. Rejecting that shape made every hlo_stats
+    # fetch return [] — so get_hlo_op_profile reported "No HLO stats data
+    # found" on runs that have it, and get_top_hlo_ops silently fell back to
+    # op-CATEGORY rows while claiming "hlo_stats unavailable".
+    # get_memory_profile_tool.py already normalizes the same way.
+    if isinstance(parsed, dict):
+        parsed = [parsed]
     if not isinstance(parsed, list):
         return []
 

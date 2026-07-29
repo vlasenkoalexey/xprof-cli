@@ -16,6 +16,7 @@ import getpass
 import json
 import logging
 import pathlib
+import re
 import tempfile
 import time
 from typing import Any
@@ -144,8 +145,19 @@ def make_key(tool_name: str, args: tuple, kwargs: dict, salt: str = "") -> str:
 
 
 def result_is_error(result: Any) -> bool:
-    """True if a tool's string result is a top-level JSON error object."""
-    if not isinstance(result, str) or not result.lstrip().startswith("{"):
+    """True if a tool's string result reports failure.
+
+    Recognizes both shapes: a top-level JSON `{"error": ...}` body, and the
+    plain-text `Error in <tool>: ...` string several tools return instead.
+    Missing the plain-text form meant those tools exited 0, so callers that
+    check the return code (kgate's _xprof_digest among them) stored the error
+    text as a result and stamped `digest_available: true`.
+    """
+    if not isinstance(result, str):
+        return False
+    if re.match(r"\s*Error in \w+:", result):
+        return True
+    if not result.lstrip().startswith("{"):
         return False
     try:
         parsed = json.loads(result)

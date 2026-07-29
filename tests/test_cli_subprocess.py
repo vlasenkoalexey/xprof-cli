@@ -109,3 +109,78 @@ def test_llo_fit_summary_cli_matches_direct_call(cli_env):
     # digest stays within the context budget on the CLI too
     digest = proc.stdout.split("\n\n```json")[0]
     assert len(digest.splitlines()) <= 30
+
+
+# --- regression: per-annotation arg coercion ---------------------------------
+# The wrapper used to stringify EVERY int/float arg so that a run named
+# "12345" survived fire's numeric parsing. That also handed the string "5" to
+# int-annotated parameters, so `get_llo_fit_summary --top_stalls 5` died on
+# `runs[:top_stalls]` with "slice indices must be integers".
+
+def test_int_annotated_params_reach_the_tool_as_int(monkeypatch):
+    # NB: cli.main does `from xprof_mcp import tool_registry`, so the patch
+    # must target THAT module object — patching a bare `import tool_registry`
+    # hits a different instance, leaves the cached branch live, and _run_salt
+    # then builds the xprof_client singleton with no logdir, breaking every
+    # later test that expects a fixture-bound client.
+    from xprof_mcp import tool_registry
+    from cli.main import _make_command
+    monkeypatch.setattr(tool_registry, "UNCACHED_TOOLS",
+                        frozenset(tool_registry.UNCACHED_TOOLS | {"tool"}))
+
+    seen = {}
+
+    def tool(run: str = "", top_stalls: int = 5, ratio: float = 1.0):
+        seen.update(run=run, top_stalls=top_stalls, ratio=ratio)
+        return None
+
+    cmd = _make_command("tool", tool)
+    cmd(run=12345, top_stalls=5, ratio=2, bypass_cache=True)
+
+    # numeric-looking NAME must still be re-stringified ...
+    assert seen["run"] == "12345" and isinstance(seen["run"], str)
+    # ... while genuinely numeric params keep their declared type
+    assert seen["top_stalls"] == 5 and isinstance(seen["top_stalls"], int)
+    assert seen["ratio"] == 2.0 and isinstance(seen["ratio"], float)
+
+
+def test_int_coercion_applies_to_positional_args(monkeypatch):
+    # NB: cli.main does `from xprof_mcp import tool_registry`, so the patch
+    # must target THAT module object — patching a bare `import tool_registry`
+    # hits a different instance, leaves the cached branch live, and _run_salt
+    # then builds the xprof_client singleton with no logdir, breaking every
+    # later test that expects a fixture-bound client.
+    from xprof_mcp import tool_registry
+    from cli.main import _make_command
+    monkeypatch.setattr(tool_registry, "UNCACHED_TOOLS",
+                        frozenset(tool_registry.UNCACHED_TOOLS | {"tool"}))
+
+    seen = {}
+
+    def tool(run: str = "", top_stalls: int = 5):
+        seen.update(run=run, top_stalls=top_stalls)
+        return None
+
+    _make_command("tool", tool)(12345, 5, bypass_cache=True)
+    assert isinstance(seen["run"], str) and isinstance(seen["top_stalls"], int)
+
+
+def test_unannotated_params_keep_legacy_stringify(monkeypatch):
+    # NB: cli.main does `from xprof_mcp import tool_registry`, so the patch
+    # must target THAT module object — patching a bare `import tool_registry`
+    # hits a different instance, leaves the cached branch live, and _run_salt
+    # then builds the xprof_client singleton with no logdir, breaking every
+    # later test that expects a fixture-bound client.
+    from xprof_mcp import tool_registry
+    from cli.main import _make_command
+    monkeypatch.setattr(tool_registry, "UNCACHED_TOOLS",
+                        frozenset(tool_registry.UNCACHED_TOOLS | {"tool"}))
+
+    seen = {}
+
+    def tool(thing=""):
+        seen["thing"] = thing
+        return None
+
+    _make_command("tool", tool)(thing=7, bypass_cache=True)
+    assert seen["thing"] == "7"

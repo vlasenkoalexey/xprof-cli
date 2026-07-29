@@ -67,7 +67,9 @@ async def test_kernel_profiling_and_llo_dumps_over_mcp(tmp_path):
             r = await _call(session, "get_llo_utilization",
                             {"run": RUN, "kernel": "matmul_optimized"})
             mxu = r["/device:TPU:0"]["units"]["MXU"]
-            assert 65 < mxu["p50_util_pct"] < 80
+            # sample-count average (preserved); the headline p50_util_pct is
+            # now duration-weighted, i.e. the fraction of TIME the unit was busy
+            assert 65 < mxu["p50_util_pct_unweighted"] < 80
 
             r = await _call(session, "get_llo_static_utilization",
                             {"program": "matmul_optimized.1"})

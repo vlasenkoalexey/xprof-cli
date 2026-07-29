@@ -503,8 +503,14 @@ _ALLOC_RE = re.compile(
 # further indices). Anchoring to [12] made those mnemonics unmatchable, so they
 # never reached `push_kinds` and a full-width kernel was mis-inferred as
 # half-width -> a phantom "<=2.0x" STRUCTURAL lever. See _scan_mxu_mnemonics.
+# The leading `v` is REQUIRED, for the same reason _MXU_ANY_RE below requires
+# it: bundle listings always spell these `vmat...`. With `v?` the classifier
+# also matched HLO identifiers in the dump's own comments (`/* hlo: matmul.3
+# */`, `%matmul.2 = custom-call(...)`), so a GEMM family whose HLO instruction
+# is literally named `matmul` counted every comment line as an MXU op — while
+# _MXU_ANY_RE, requiring the `v`, could not see the over-match to flag it.
 _MXU_MNEMONIC_RE = re.compile(
-    r"\bv?(?P<op>matmul|matpush(?P<push>\d+)|matprep|matpop|matres)"
+    r"\bv(?P<op>matmul|matpush(?P<push>\d+)|matprep|matpop|matres)"
     r"(?P<mods>(?:\.[a-z0-9]+)*)\b"
 )
 # Any MXU-looking *mnemonic*, used only to detect ops the classifier above does
@@ -1008,6 +1014,22 @@ def _fit_data(d: str, program: str, top_stalls: int) -> dict:
             "class": recs[0]["kind"],
             "top_lever": recs[0]["lever"],
             "ceiling_estimate": recs[0]["ceiling_estimate"],
+        }
+    elif not (data.get("units") or data.get("timeline")):
+        # `recs` is also empty when the dump simply lacked the per-bundle
+        # utilization pass (_fit_data swallows that as `except KeyError`), so
+        # there was no evidence to derive a lever FROM. Claiming AT-CEILING
+        # there tells a K9 stop-gate to close the family on missing data. The
+        # human `verdict` string already says "no signal"; the machine field —
+        # documented as the one for worker loops to branch on — must agree.
+        data["verdict_class"] = {
+            "class": "UNKNOWN",
+            "top_lever": None,
+            "ceiling_estimate": None,
+            "reason": "no utilization matrix in dump — the dump lacks the "
+                      "per-bundle utilization pass, so no lever could be "
+                      "derived. This is absence of evidence, NOT evidence "
+                      "the kernel is at its ceiling.",
         }
     else:
         data["verdict_class"] = {
