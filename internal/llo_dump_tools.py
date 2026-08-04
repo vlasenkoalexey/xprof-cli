@@ -824,6 +824,48 @@ def _timeline(units: list[str], rows: list[list[int]],
     }
 
 
+# Measured track record of each emitted lever across the kernel families that
+# acted on it. A lever that has never been cashed must not outrank one that has:
+# agents were repeatedly observed acting on the top recommendation *because* it
+# was ranked first, with the doc-layer caveats already in context and ignored.
+#
+# "live-register": the spill-pressure lever. 0/5 families. Two direct
+#   refutations: a family acted on it and regressed 29% (a vector-typed
+#   lax.cond carrying the masked operand cost more than the masking), and a
+#   second measured the textbook fix -- shortening a 4.7 MB operand's live
+#   range by re-reading it from VMEM at each use -- as *worse* than holding it.
+#   Four other families independently priced attackable spill headroom at
+#   0.16-4% of body. The metric is a proxy for "this kernel has large arrays",
+#   which is true of every tiled kernel, so it cannot discriminate the
+#   expensive arrays from the free ones.
+# "mxu-half-width": phantom lever from a `matpush3` regex miss, 3 families.
+#   The regex is fixed (2026-07-28) and the lever is now gated on positive
+#   evidence; the record is retained so the gate is never quietly relaxed.
+_LEVER_TRACK_RECORD = {
+    "live-register": {
+        "confirmed": 0, "attempted": 5,
+        "note": ("0/5. Directly refuted twice: -29% when acted on, and the "
+                 "canonical live-range fix measured WORSE. Prefer the "
+                 "operand-materialization framing below."),
+    },
+    "mxu-half-width": {
+        "confirmed": 0, "attempted": 3,
+        "note": ("0/3 -- was a regex artifact before 2026-07-28; now gated on "
+                 "positive evidence (push_kinds == {'1'})."),
+    },
+}
+
+# A lever with no confirmations and this many attempts is demoted below every
+# lever that still has an open record, regardless of its stated ceiling.
+_DISCREDITED_MIN_ATTEMPTS = 3
+
+
+def _is_discredited(rec: dict) -> bool:
+    tr = rec.get("track_record")
+    return bool(tr and tr["confirmed"] == 0
+                and tr["attempted"] >= _DISCREDITED_MIN_ATTEMPTS)
+
+
 def _recommendations(vmem: dict, mxu: dict, spill: dict, tl: dict) -> list[dict]:
     """Ranked (lever, expected ceiling) list — the feedback-loop payload."""
     recs: list[dict] = []
@@ -842,12 +884,33 @@ def _recommendations(vmem: dict, mxu: dict, spill: dict, tl: dict) -> list[dict]
             "lever": ("restructure the live-register set: less unroll / "
                       "split accumulator chain (spill traffic is not a "
                       "tunable)"),
-            "ceiling_estimate": "structural — spills inflate VPU-active% "
-                                "and steal VSTORE/VLOAD slots",
+            "ceiling_estimate": "unquantified — no ceiling can be derived "
+                                "from a spill count",
+            # Absolute counts lead. The per-bundle rate is a RATIO whose
+            # denominator moves with the very edit being graded: remove work
+            # and `bundles` falls too, so the rate can RISE while wall time
+            # FALLS. Never grade a candidate on it.
             "basis": (f"{spill['spills_total']} spills + "
-                      f"{spill['fills_total']} fills over "
-                      f"{spill['bundles']} bundles "
-                      f"({spill['spill_fill_per_bundle']}/bundle)"),
+                      f"{spill['fills_total']} fills (absolute) over "
+                      f"{spill['bundles']} bundles; rate "
+                      f"{spill['spill_fill_per_bundle']}/bundle"),
+            "denominator_warning": (
+                "spill_fill_per_bundle is a ratio over `bundles`, which "
+                "shrinks when work is removed. It can rise on a candidate "
+                "that got faster. Use the absolute spill/fill counts, and "
+                "never use either as a grading metric."),
+            "track_record": _LEVER_TRACK_RECORD["live-register"],
+            "confidence": "low",
+            "alternative": (
+                "Before attacking register liveness, classify each full-width "
+                "array by ROLE: an operand-sized value on the memory->MXU path "
+                "(a matmul operand built by a vector op rather than read "
+                "straight from a VMEM ref) is reliably expensive; a "
+                "result-sized value in the elementwise chain after a matmul is "
+                "often free. Measured on one kernel: removing ONE operand-sized "
+                "materialization (5.9M elements) gained 13.6%, while removing "
+                "THREE result-sized passes (3.5M elements) gained 0.4%, "
+                "sub-sigma."),
         })
 
     mem_stall = pct.get("mem_stall_mxu_idle", 0)
@@ -907,12 +970,21 @@ def _recommendations(vmem: dict, mxu: dict, spill: dict, tl: dict) -> list[dict]
                      "half-width)",
             "ceiling_estimate": "<=2.0x",
             "basis": "only matpush1 observed — 128-lane staging",
+            "track_record": _LEVER_TRACK_RECORD["mxu-half-width"],
+            "confidence": "low",
         })
 
     def rank(r: dict):
-        # spill-pressure headline first, then numeric ceilings descending.
-        if r["kind"] == "STRUCTURAL" and "spill" in r["basis"]:
-            return (0, 0.0)
+        # Levers with a 0-for-N measured record sort LAST, whatever they claim.
+        #
+        # This inverts the previous rule, which hard-pinned the spill lever to
+        # position 0 ("spill-pressure headline first"). That pin was not earned
+        # from any measurement -- it was an assumption that register pressure
+        # dominates -- and it put a 0/5 lever at the top of the one list agents
+        # branch on. Levers with a quantified ceiling and no adverse record now
+        # outrank it.
+        if _is_discredited(r):
+            return (2, 0.0)
         m = re.search(r"([\d.]+)x", r["ceiling_estimate"])
         return (1, -float(m.group(1)) if m else 0.0)
 
@@ -1015,6 +1087,17 @@ def _fit_data(d: str, program: str, top_stalls: int) -> dict:
             "top_lever": recs[0]["lever"],
             "ceiling_estimate": recs[0]["ceiling_estimate"],
         }
+        if _is_discredited(recs[0]):
+            # Every lever we could derive has a 0-for-N record. Say so on the
+            # machine-readable field worker loops branch on, rather than
+            # handing back a top_lever that reads as a recommendation.
+            tr = recs[0]["track_record"]
+            data["verdict_class"]["track_record"] = tr
+            data["verdict_class"]["warning"] = (
+                f"top_lever has a measured record of {tr['confirmed']}/"
+                f"{tr['attempted']} across families that acted on it. Every "
+                "lever derivable from this dump is discredited; treat this as "
+                "'no trustworthy lever from static LLO', not as guidance.")
     elif not (data.get("units") or data.get("timeline")):
         # `recs` is also empty when the dump simply lacked the per-bundle
         # utilization pass (_fit_data swallows that as `except KeyError`), so
@@ -1037,10 +1120,37 @@ def _fit_data(d: str, program: str, top_stalls: int) -> dict:
             "top_lever": None,
             "ceiling_estimate": "~1.0x (no stall lever above threshold)",
         }
+    # Additive provenance split. The existing top-level keys are unchanged
+    # (consumers depend on them); these two views say which of them are
+    # COUNTED and which are INFERRED. The digest previously interleaved the
+    # two, so a heuristic guess printed with the same authority as a count --
+    # which is how a 0/5 lever came to be acted on as if it were a finding.
+    data["provenance"] = {
+        "measurements": {
+            "description": "counted from the dump; cite these",
+            "keys": ["vmem", "mxu", "spills", "units", "timeline", "totals"],
+        },
+        "hypotheses": {
+            "description": ("INFERRED heuristics, not measurements. Leads to "
+                            "test, never evidence for a verdict. Check "
+                            "`track_record` before spending a candidate."),
+            "keys": ["recommendations", "verdict", "verdict_class"],
+        },
+        "grading_metrics_forbidden": {
+            "spill_fill_per_bundle": (
+                "ratio whose denominator shrinks with the edit being graded; "
+                "can rise on a candidate that got faster"),
+            "occupancy_pct": (
+                "static issue-slot co-residency, not time; a unit at 60% "
+                "static occupancy may be entirely in the shadow of memory "
+                "waits and cost nothing to remove"),
+        },
+    }
     data["caveat"] = (
         "static compile-time analysis (issue slots + allocation sizes), "
         "not measured time; verify with get_llo_utilization on a "
-        "kernel-profiling trace")
+        "kernel-profiling trace. `recommendations` are INFERRED leads, not "
+        "measurements — check each lever's track_record before acting")
     return data
 
 
@@ -1119,10 +1229,17 @@ def _fit_digest(data: dict, top_stalls: int) -> list[str]:
 
     recs = data["recommendations"]
     if recs:
-        lines.append("Recommendations (ranked):")
+        lines.append("Hypotheses (INFERRED leads, ranked — not measurements):")
         for i, r in enumerate(recs[:4], 1):
-            lines.append(f"  {i}. [{r['kind']}] {r['lever']} -> "
-                         f"{r['ceiling_estimate']} ({r['basis']})")
+            line = (f"  {i}. [{r['kind']}] {r['lever']} -> "
+                    f"{r['ceiling_estimate']} ({r['basis']})")
+            tr = r.get("track_record")
+            if tr:
+                line += (f"  [TRACK RECORD {tr['confirmed']}/"
+                         f"{tr['attempted']} — {tr['note']}]")
+            lines.append(line)
+            if r.get("alternative"):
+                lines.append(f"     ALTERNATIVE: {r['alternative']}")
 
     vc = data["verdict_class"]
     lines.append(f"Verdict: {data['verdict']} [class={vc['class']} "

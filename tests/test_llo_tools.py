@@ -244,7 +244,7 @@ def test_fit_summary_sections_and_line_budget():
     lines = digest.splitlines()
     assert len(lines) <= 30
     for marker in ("# LLO fit summary", "VMEM:", "MXU:", "Unit split",
-                   "Spills:", "Timeline:", "Recommendations",
+                   "Spills:", "Timeline:", "Hypotheses",
                    "Verdict:", "Caveat:"):
         assert any(l.startswith(marker) or marker in l for l in lines), marker
     assert data["program"] == "matmul_optimized.1"
@@ -521,3 +521,66 @@ def test_device_wall_report_ignores_nested_baseline(tmp_path):
     r = json.loads(kpt.get_device_wall_report(RUN, measure_json=str(p)))
     assert r["wall_p50_ms"] == 1.0
     assert "baseline" not in r["wall_source"]["key"]
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-04: the prescription layer, not the measurement layer, was the
+# defect. Two levers had been emitted with authority they had not earned --
+# the spill lever was hard-pinned to rank 1 by a rule that assumed rather than
+# measured that register pressure dominates, and agents acted on it *because*
+# it was rank 1, with the doc-layer caveats already in context. These lock the
+# fix in.
+# ---------------------------------------------------------------------------
+
+
+def test_spill_lever_is_not_hard_pinned_to_rank_one():
+    """A 0-for-N lever must never outrank one with a quantified ceiling."""
+    from internal.llo_dump_tools import _recommendations
+    spill = {"spill_fill_per_bundle": 3.0, "spills_total": 900,
+             "fills_total": 900, "bundles": 600}
+    tl = {"bundle_class_pct": {"mem_stall_mxu_idle": 40, "salu_bubble": 0,
+                               "vpu_only_mxu_idle": 0, "idle": 0}}
+    recs = _recommendations({"headroom_vs_scoped_default_pct": 50}, {}, spill, tl)
+    assert recs, "expected at least the spill + mem-stall levers"
+    assert "live-register" not in recs[0]["lever"], (
+        "the 0/5 spill lever is ranked first again -- the hard pin is back")
+    assert recs[0]["kind"] == "TUNE"
+    assert "1.67x" in recs[0]["ceiling_estimate"]
+    assert "live-register" in recs[-1]["lever"], "discredited lever sorts last"
+
+
+def test_spill_lever_carries_its_track_record_and_an_alternative():
+    from internal.llo_dump_tools import _recommendations
+    spill = {"spill_fill_per_bundle": 3.0, "spills_total": 900,
+             "fills_total": 900, "bundles": 600}
+    recs = _recommendations({}, {}, spill, {"bundle_class_pct": {}})
+    r = next(x for x in recs if "live-register" in x["lever"])
+    assert r["track_record"]["confirmed"] == 0
+    assert r["track_record"]["attempted"] >= 3
+    assert r["confidence"] == "low"
+    assert "denominator_warning" in r, (
+        "spill_fill_per_bundle is a ratio; the warning must travel with it")
+    assert "operand" in r["alternative"], (
+        "must point at the operand-vs-result role split that did predict")
+    # Absolute counts must lead the basis, not the rate.
+    assert r["basis"].startswith("900 spills + 900 fills (absolute)")
+    assert "no ceiling can be derived" in r["ceiling_estimate"]
+
+
+def test_verdict_class_flags_an_all_discredited_lever_set():
+    """If the only derivable lever is 0-for-N, say so on the machine field."""
+    _, data = _fit_parts()
+    vc = data["verdict_class"]
+    if vc.get("top_lever") and "live-register" in vc["top_lever"]:
+        assert "warning" in vc and vc["track_record"]["confirmed"] == 0
+
+
+def test_provenance_split_marks_hypotheses_as_inferred():
+    _, data = _fit_parts()
+    prov = data["provenance"]
+    assert "recommendations" in prov["hypotheses"]["keys"]
+    assert "verdict_class" in prov["hypotheses"]["keys"]
+    assert "spills" in prov["measurements"]["keys"]
+    assert "spill_fill_per_bundle" in prov["grading_metrics_forbidden"]
+    assert "occupancy_pct" in prov["grading_metrics_forbidden"]
+    assert "INFERRED" in data["caveat"]
